@@ -33,15 +33,15 @@
                     └── 알림 ──  src/tools ──▶ 손 src/desk ──▶ 화면·마우스·키보드
 ```
 
-| 부분 | 역할 | 구현 |
-| --- | --- | --- |
-| 귀 | Slack 메시지 수신, 이름 조회 | Socket Mode(Bun 내장 WebSocket 직접 구현) + 읽기 전용 Web API |
-| 대기열 | 나에게 온 말인지 판별, 루프 정지, 알림 | `src/inbox` |
-| 손 | 스크린샷·클릭·입력 | `screencapture`/`sips` + Swift 도우미(`native/desk-helper.swift`, CGEvent) |
-| 책상(도구) | 손과 대기열을 엔진에게 제공 | localhost MCP 서버(bearer 토큰), 엔진 무관 |
-| 두뇌 | 판단·조작 | Claude Code CLI `claude -p` (맥에 로그인된 Claude 계정) |
-| 런타임 | 턴 순서, 일시정지·재개, 상태 저장 | `src/agent`, `data/state.json` |
-| 운영 | 상시 실행, 점검 | launchd LaunchAgent, `bun run doctor` |
+| 부분       | 역할                                   | 구현                                                                       |
+| ---------- | -------------------------------------- | -------------------------------------------------------------------------- |
+| 귀         | Slack 메시지 수신, 이름 조회           | Socket Mode(Bun 내장 WebSocket 직접 구현) + 읽기 전용 Web API              |
+| 대기열     | 나에게 온 말인지 판별, 루프 정지, 알림 | `src/inbox`                                                                |
+| 손         | 스크린샷·클릭·입력                     | `screencapture`/`sips` + Swift 도우미(`native/desk-helper.swift`, CGEvent) |
+| 책상(도구) | 손과 대기열을 엔진에게 제공            | localhost MCP 서버(bearer 토큰), 엔진 무관                                 |
+| 두뇌       | 판단·조작                              | Claude Code CLI `claude -p` (맥에 로그인된 Claude 계정)                    |
+| 런타임     | 턴 순서, 일시정지·재개, 상태 저장      | `src/agent`, `data/state.json`                                             |
+| 운영       | 상시 실행, 점검                        | launchd LaunchAgent, `bun run doctor`                                      |
 
 보일러플레이트 철학 적용: 부팅 시 검증되는 설정(`src/config.ts`), 컴포지션 루트와 드라이버 교체(`src/container.ts`),
 검증 파사드(zod는 `src/validation`에서만), ESLint로 강제하는 경계, `bun run check` 게이트(prettier → eslint → tsc → knip → test),
@@ -96,30 +96,30 @@ Bun 내장 WebSocket으로 직접 구현했다(hello / ack / disconnect 재연�
 
 ## 4. 이 맥(첫 에이전트 장비) 세팅
 
-| 항목 | 값 |
-| --- | --- |
-| 장비 | MacBook Pro, 화면 1728×1117pt (에이전트는 축소 스크린샷을 봄) |
-| 에이전트 | `에이전트1`, Slack 멤버 ID `U0C6F59TRNW`, 워크스페이스 "집" |
-| 사람 | Jonghyun Park, `U0BP73A4RDE` (`HUMAN_SLACK_USER_IDS`) |
-| 런타임 | Homebrew bun 1.4.2 (`brew pin bun` 권장), Claude Code CLI 2.1.295 |
-| Slack 클라이언트 | 데스크톱 앱 (에이전트 계정 로그인) |
-| 상시 실행 | `~/Library/LaunchAgents/com.slack-agent-org.agent.plist`, 로그 `data/logs/agent.log` |
-| 권한 | 손쉬운 사용 + 화면 녹음: 터미널, `/opt/homebrew/Cellar/bun/1.4.2/bin/bun` |
+| 항목             | 값                                                                                   |
+| ---------------- | ------------------------------------------------------------------------------------ |
+| 장비             | MacBook Pro, 화면 1728×1117pt (에이전트는 축소 스크린샷을 봄)                        |
+| 에이전트         | `에이전트1`, Slack 멤버 ID `U0C6F59TRNW`, 워크스페이스 "집"                          |
+| 사람             | Jonghyun Park, `U0BP73A4RDE` (`HUMAN_SLACK_USER_IDS`)                                |
+| 런타임           | Homebrew bun 1.4.2 (`brew pin bun` 권장), Claude Code CLI 2.1.295                    |
+| Slack 클라이언트 | 데스크톱 앱 (에이전트 계정 로그인)                                                   |
+| 상시 실행        | `~/Library/LaunchAgents/com.slack-agent-org.agent.plist`, 로그 `data/logs/agent.log` |
+| 권한             | 손쉬운 사용 + 화면 녹음: 터미널, `/opt/homebrew/Cellar/bun/1.4.2/bin/bun`            |
 
 세팅 절차 전체는 저장소의 `docs/mac-setup.md`.
 
 ## 5. 겪은 문제와 해결
 
-| 증상 | 원인 | 해결 |
-| --- | --- | --- |
-| 연결 후 2초마다 끊기고 재연결 반복 | `@slack/socket-mode`가 Bun에 없는 `undici.ping` 사용 | Socket Mode를 Bun 내장 WebSocket으로 직접 구현 |
-| Ctrl+C 한 번에 강제 종료 | `bun run`이 SIGINT를 한 번 더 전달 | 1초 안의 중복 신호는 같은 입력으로 처리 |
-| 시스템 설정에 "손쉬운 사용" 항목이 안 보임 | 왼쪽 메뉴의 접근성 화면과 혼동, 권한 요청 전이라 목록에 없음 | 도우미가 macOS 권한 창을 띄우도록(`request`), 바로 여는 URL 안내 |
-| 답장 첫 글자 누락, `cmd+a` 뒤 입력 무시 | 수식키 해제 신호 미전송, 클릭 직후 포커스 전 입력 | 수식키를 실제 키처럼 눌렀다 뗌, 입력 전 0.15초 대기, 글자에 수식키 상속 금지 |
-| Spotlight 첫 실행 안내 창에 막힘 | macOS 첫 사용 안내 | Slack은 Dock 아이콘으로 띄우도록 지침 변경 |
-| 서비스 첫 실행에서 화면이 검게 보임 | launchd로 돌면 터미널이 아니라 bun 자체에 권한 필요, macOS 허용 창 | 사람이 허용, 권한 없으면 턴 보류 + 메시지 대기 |
-| 서비스 재시작 후 DM이 안 들어오는 것처럼 보임 | 보내는 휴대폰이 오프라인이라 Slack에 도달하지 않음 | `conversations.history`로 메시지 도착 여부부터 확인하는 절차를 문서화 |
-| 원격으로 보낸 파일이 맥에 반영 안 됨(작업 과정) | 같은 경로로 재전송 시 이전 내용이 쓰임 | 매번 새 경로로 보내고 해시로 대조 |
+| 증상                                            | 원인                                                               | 해결                                                                         |
+| ----------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| 연결 후 2초마다 끊기고 재연결 반복              | `@slack/socket-mode`가 Bun에 없는 `undici.ping` 사용               | Socket Mode를 Bun 내장 WebSocket으로 직접 구현                               |
+| Ctrl+C 한 번에 강제 종료                        | `bun run`이 SIGINT를 한 번 더 전달                                 | 1초 안의 중복 신호는 같은 입력으로 처리                                      |
+| 시스템 설정에 "손쉬운 사용" 항목이 안 보임      | 왼쪽 메뉴의 접근성 화면과 혼동, 권한 요청 전이라 목록에 없음       | 도우미가 macOS 권한 창을 띄우도록(`request`), 바로 여는 URL 안내             |
+| 답장 첫 글자 누락, `cmd+a` 뒤 입력 무시         | 수식키 해제 신호 미전송, 클릭 직후 포커스 전 입력                  | 수식키를 실제 키처럼 눌렀다 뗌, 입력 전 0.15초 대기, 글자에 수식키 상속 금지 |
+| Spotlight 첫 실행 안내 창에 막힘                | macOS 첫 사용 안내                                                 | Slack은 Dock 아이콘으로 띄우도록 지침 변경                                   |
+| 서비스 첫 실행에서 화면이 검게 보임             | launchd로 돌면 터미널이 아니라 bun 자체에 권한 필요, macOS 허용 창 | 사람이 허용, 권한 없으면 턴 보류 + 메시지 대기                               |
+| 서비스 재시작 후 DM이 안 들어오는 것처럼 보임   | 보내는 휴대폰이 오프라인이라 Slack에 도달하지 않음                 | `conversations.history`로 메시지 도착 여부부터 확인하는 절차를 문서화        |
+| 원격으로 보낸 파일이 맥에 반영 안 됨(작업 과정) | 같은 경로로 재전송 시 이전 내용이 쓰임                             | 매번 새 경로로 보내고 해시로 대조                                            |
 
 ## 6. 운영 메모
 
@@ -141,19 +141,23 @@ pgrep -fl "src/index.ts"    # 에이전트 프로세스는 하나여야 함
 ## 7. 남은 일
 
 **바로 할 것**
+
 - 저장소를 git에 첫 커밋 (아직 커밋 없음). `.husky/pre-push`가 맥에 없으면 추가(원격 도구로 쓸 수 없는 경로).
 - 덮개·자동 로그인·잠자기 해제 등 상시 운영 조건 점검 (`docs/mac-setup.md` 2단계).
 
 **아직 실전 검증하지 않은 것**
+
 - 채널(`#team`) 멘션과 스레드 답글 흐름
 - 에이전트끼리의 대화와 루프 정지(두 번째 에이전트가 생긴 뒤)
 - `inbox_yield`로 긴 작업을 멈췄다가 재개하는 흐름 (테스트로만 검증)
 
 **계획서의 미정 사항 (조직 차원)**
+
 - GPT 에이전트: OpenAI 엔진 드라이버 + 두 번째 장비 (책상·귀·인터럽트 규칙은 그대로 재사용)
 - 각 에이전트의 이름·캐릭터·직함, 업무 도메인 배정
 - 작업 권한과 안전장치 — 정해지기 전까지 에이전트는 Slack 대화만 할 수 있음
 - 장애 대응: 실패한 턴의 메시지 재시도(지금은 로그만 남김), 토큰 만료 알림
 
 **기술 부채**
+
 - 여러 디스플레이 지원(지금은 주 디스플레이만), Linux(라즈베리파이) 데스크 드라이버
