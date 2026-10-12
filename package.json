@@ -1,0 +1,53 @@
+{
+  "name": "slack-agent-org",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "engines": {
+    "bun": "1.4.2",
+    "node": "24.19.0"
+  },
+  "scripts": {
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "knip": "knip",
+    "check": "bun run format:check && bun run lint && bun run typecheck && bun run knip && bun test",
+    "desk:build": "mkdir -p .bin && swiftc -O native/desk-helper.swift -o .bin/desk-helper",
+    "doctor": "bun run scripts/doctor.ts",
+    "service:install": "bun run scripts/service.ts install",
+    "service:restart": "bun run scripts/service.ts restart",
+    "service:uninstall": "bun run scripts/service.ts uninstall",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/bun": "^1.4.2",
+    "eslint": "^10.11.0",
+    "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
+    "knip": "^6.37.0",
+    "lint-staged": "^17.5.1",
+    "prettier": "^3.9.8",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.1"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@slack/web-api": "^8.2.0",
+    "zod": "^4.6.5"
+  }
+}

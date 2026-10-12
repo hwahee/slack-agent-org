@@ -1,0 +1,41 @@
+name: CI
+
+# Runs on every push. Everything here runs without Slack, a screen or the
+# Claude CLI: tests use the memory desk, fake listeners and fake engines.
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Both versions come from package.json — setup-bun reads `packageManager`,
+      # setup-node reads `engines.node`.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prettier (format check)
+        run: bun run format:check
+
+      - name: ESLint
+        run: bun run lint
+
+      - name: TypeScript (strict typecheck)
+        run: bun run typecheck
+
+      - name: Knip (unused files/exports/dependencies)
+        run: bun run knip
+
+      - name: Tests
+        run: bun test

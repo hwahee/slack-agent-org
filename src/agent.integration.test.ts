@@ -1,0 +1,128 @@
+/**
+ * The whole agent, wired by the real container, with only the outside world
+ * replaced: Slack by a memory listener, the screen by a memory desk, the
+ * model by a script that works the desk through the real MCP tool server —
+ * the same path `claude -p` takes.
+ */
+import { afterEach, describe, expect, test } from 'bun:test';
+
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+
+import { loadConfig } from './config';
+import { createContainer, type Container } from './container';
+import { createMemoryDesk } from './desk/memory';
+import type { Engine, EngineTurn } from './engine/types';
+import { silentLogger } from './lib/log';
+import { createMemoryDirectory, createMemoryListener } from './slack/memory';
+import { createMemoryStateStore } from './state/memory';
+
+const AGENT = 'U0AGENT';
+const HUMAN = 'U0HUMAN';
+
+let container: Container | undefined;
+
+afterEach(async () => {
+  await container?.toolServer().stop();
+  container = undefined;
+});
+
+describe('agent', () => {
+  test('hears a DM, works the desk to reply, and ignores its own message', async () => {
+    const listener = createMemoryListener();
+    const desk = createMemoryDesk();
+    const stop = new AbortController();
+    const turns: EngineTurn[] = [];
+
+    /** Plays the model: answers on screen, the way the system prompt says to. */
+    const engine: Engine = {
+      async run(turn) {
+        turns.push(turn);
+        if (!container) throw new Error('container not built yet');
+        const { url, token } = container.toolServer();
+        const client = new Client({ name: 'scripted-model', version: '1.0.0' });
+        await client.connect(
+          new StreamableHTTPClientTransport(new URL(url), {
+            requestInit: { headers: { Authorization: `Bearer ${token}` } },
+          }),
+        );
+        const use = (name: string, args: Record<string, unknown> = {}) =>
+          client.callTool({ name, arguments: args });
+
+        await use('screenshot');
+        await use('key', { combo: 'cmd+k' });
+        await use('type', { text: '지훈' });
+        await use('key', { combo: 'enter' });
+        await use('click', { x: 700, y: 820 });
+        await use('type', { text: '네, 3시에 가능합니다.' });
+        await use('key', { combo: 'enter' });
+        await client.close();
+
+        // The sent message comes back through the ears, like everyone's does.
+        listener.emit({
+          channel: 'D1',
+          channelType: 'im',
+          user: AGENT,
+          text: '네, 3시에 가능합니다.',
+          ts: '2.0',
+        });
+        stop.abort();
+        return { sessionId: 'session-1', ok: true, summary: '답장함' };
+      },
+    };
+
+    container = createContainer(
+      loadConfig({
+        AGENT_NAME: '클로이',
+        AGENT_SLACK_USER_ID: AGENT,
+        HUMAN_SLACK_USER_IDS: HUMAN,
+        SLACK_APP_TOKEN: 'xapp-test',
+        SLACK_READ_TOKEN: 'xoxp-test',
+      }),
+      {
+        log: silentLogger,
+        listener,
+        directory: createMemoryDirectory({ users: { [HUMAN]: '지훈' }, channels: { C1: 'team' } }),
+        desk,
+        state: createMemoryStateStore(),
+        engine,
+      },
+    );
+
+    const intake = container.intake();
+    await container.listener().start((event) => void intake(event));
+    listener.emit({
+      channel: 'C1',
+      channelType: 'channel',
+      user: HUMAN,
+      text: '점심 뭐 먹지',
+      ts: '0.5',
+    });
+    listener.emit({
+      channel: 'D1',
+      channelType: 'im',
+      user: HUMAN,
+      text: '오늘 3시 미팅 돼요?',
+      ts: '1.0',
+    });
+    await Bun.sleep(0); // intake resolves names asynchronously
+
+    await container.runtime().run(stop.signal);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.prompt).toContain('DM · 지훈');
+    expect(turns[0]?.prompt).toContain('오늘 3시 미팅 돼요?');
+    expect(turns[0]?.prompt).not.toContain('점심'); // not addressed to the agent
+    expect(desk.actions).toEqual([
+      'screenshot',
+      'key cmd+k',
+      'type 지훈',
+      'key return',
+      'click 700,820 left x1',
+      'type 네, 3시에 가능합니다.',
+      'key return',
+    ]);
+    expect(container.inbox().size).toBe(0); // its own reply did not come back as work
+    expect(await container.state().sessionOf('D1')).toBe('session-1');
+  });
+});
