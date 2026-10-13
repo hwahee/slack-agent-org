@@ -4,10 +4,8 @@
  */
 import type { InboxMessage } from './types';
 
-/** Slack `ts` ("1700000000.000100") → a local wall-clock time, like Slack shows. */
-function slackTime(ts: string, timeZone: string): string {
-  const date = new Date(Number(ts.split('.')[0]) * 1000);
-  if (Number.isNaN(date.getTime())) return ts;
+/** A moment as a local wall-clock time, like Slack shows ("10. 10. 오전 9:00"). */
+export function wallClock(date: Date, timeZone: string): string {
   return new Intl.DateTimeFormat('ko-KR', {
     timeZone,
     month: 'numeric',
@@ -15,6 +13,12 @@ function slackTime(ts: string, timeZone: string): string {
     hour: 'numeric',
     minute: '2-digit',
   }).format(date);
+}
+
+/** Slack `ts` ("1700000000.000100") → a local wall-clock time. */
+export function slackTime(ts: string, timeZone: string): string {
+  const date = new Date(Number(ts.split('.')[0]) * 1000);
+  return Number.isNaN(date.getTime()) ? ts : wallClock(date, timeZone);
 }
 
 function where(message: InboxMessage): string {

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { silentLogger } from '../lib/log';
 import { createMemoryDirectory } from '../slack/memory';
+import { createMemoryStateStore } from '../state/memory';
 import { Addressing } from './addressing';
 import { Inbox } from './inbox';
 import { createIntake } from './intake';
@@ -76,6 +77,7 @@ describe('Inbox', () => {
 describe('intake', () => {
   test('delivers an addressed message with the names a person would see', async () => {
     const inbox = new Inbox();
+    const state = createMemoryStateStore();
     const intake = createIntake({
       addressing: new Addressing({
         agentUserId: 'U0AGENT',
@@ -84,6 +86,7 @@ describe('intake', () => {
       }),
       directory: createMemoryDirectory({ users: { U0HUMAN: '지훈' }, channels: { C1: 'team' } }),
       inbox,
+      state,
       log: silentLogger,
     });
 
@@ -112,6 +115,11 @@ describe('intake', () => {
         threadTs: '1.0',
         text: '<@U0AGENT> 리뷰 부탁해요',
       }),
+    ]);
+    // Both are remembered as what was said in the channel, delivered or not.
+    expect((await state.memoryOf('C1')).remarks.map((r) => r.text)).toEqual([
+      'no mention',
+      '<@U0AGENT> 리뷰 부탁해요',
     ]);
   });
 });

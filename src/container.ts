@@ -88,6 +88,7 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
       }),
       directory: directory(),
       inbox: inbox(),
+      state: state(),
       log,
     }),
   );
@@ -130,7 +131,7 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
           maxTurns: config.engineMaxTurns,
           systemPrompt: systemPrompt(config),
           tools: { name: TOOL_SERVER_NAME, url: server.url, token: server.token },
-          workDir: join(dataDir, 'workspace'),
+          workDir: resolve(config.engineWorkDir),
           log,
         });
       }
