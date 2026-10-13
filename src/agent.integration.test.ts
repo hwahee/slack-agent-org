@@ -82,7 +82,10 @@ describe('agent', () => {
       {
         log: silentLogger,
         listener,
-        directory: createMemoryDirectory({ users: { [HUMAN]: '지훈' }, channels: { C1: 'team' } }),
+        directory: createMemoryDirectory({
+          users: { [HUMAN]: '지훈', [AGENT]: '클로이' },
+          channels: { C1: 'team' },
+        }),
         desk,
         state: createMemoryStateStore(),
         engine,
@@ -123,6 +126,17 @@ describe('agent', () => {
       'key return',
     ]);
     expect(container.inbox().size).toBe(0); // its own reply did not come back as work
-    expect(await container.state().sessionOf('D1')).toBe('session-1');
+    // What was said is remembered for the next turn: the human's question, the agent's
+    // own reply, and the channel chatter it was not asked about — and the turn's note.
+    expect(await container.state().memoryOf('D1')).toEqual({
+      remarks: [
+        { ts: '1.0', userName: '지훈', text: '오늘 3시 미팅 돼요?', own: false },
+        { ts: '2.0', userName: '클로이', text: '네, 3시에 가능합니다.', own: true },
+      ],
+      notes: [{ at: expect.any(String) as string, text: '답장함' }],
+    });
+    expect((await container.state().memoryOf('C1')).remarks.map((r) => r.text)).toEqual([
+      '점심 뭐 먹지',
+    ]);
   });
 });

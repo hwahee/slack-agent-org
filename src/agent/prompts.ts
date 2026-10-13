@@ -4,8 +4,9 @@
  * text, and so tests can pin the parts the rest of the system relies on
  * (tool names, the cooperative-interruption protocol).
  */
-import { formatMessage } from '../inbox/format';
+import { formatMessage, slackTime, wallClock } from '../inbox/format';
 import type { InboxMessage } from '../inbox/types';
+import { EMPTY_MEMORY, type ConversationMemory } from '../state/types';
 
 export interface PromptContext {
   readonly agentName: string;
@@ -48,6 +49,9 @@ Slack은 ${CLIENT_LABEL[slackClient]}으로 씁니다.
 5. 보낸 뒤의 화면 변화에 보낸 글이 보이면 된 것입니다. 보이지 않으면 read_screen으로 확인하고, 잘못 보냈다면 사람이 하듯 고치거나 지웁니다.
 조작할 때마다 결과의 화면 변화로 예상대로 됐는지 확인하고, 로딩 중이면 wait로 기다립니다.
 
+## 기억
+턴은 매번 새로 시작합니다. 지난 턴의 화면과 조작은 기억에 없고, 프롬프트에 붙는 "이 대화의 최근 기록"(오간 말)과 "지난 작업 기록"(지난 턴들의 마지막 말)이 당신의 기억입니다. 그보다 앞의 일이 필요하면 Slack 화면에서 위로 스크롤해 읽습니다.
+
 ## 새 메시지가 왔을 때 (협조적 인터럽트)
 일하는 도중 도구 결과 끝에 🔔 알림이 붙을 수 있습니다. 알림을 봤다고 하던 동작을 바로 끊지 마세요. 쓰던 메시지를 다 보냈거나 단계 하나를 끝낸 것처럼 멈춰도 안전한 지점에 이르면 inbox_peek로 확인합니다.
 - 지금 하는 일과 같은 대화이거나 금방 답할 수 있으면: inbox_take로 가져와 이번 턴에 답합니다.
@@ -58,24 +62,71 @@ Slack은 ${CLIENT_LABEL[slackClient]}으로 씁니다.
 - 동료로서 자연스럽게, 상대의 언어와 말투에 맞춰 답합니다. 짧은 말에는 짧게.
 - 모르는 것과 할 수 없는 것은 솔직하게 말합니다.
 - 답이 필요 없는 메시지(끝난 대화, 단순 확인)에는 답하지 않아도 됩니다.
-- 턴을 마칠 때 쓰는 마지막 말은 작업 기록일 뿐 누구에게도 전달되지 않습니다. 전할 말은 반드시 Slack 화면에서 보내세요.
+- 턴을 마칠 때 쓰는 마지막 말은 다음 턴의 당신에게 남기는 작업 기록이고, 누구에게도 전달되지 않습니다. 전할 말은 반드시 Slack 화면에서 보내세요. 작업 기록에는 한 일, 지금 상태(열어 둔 앱·창, 만든 파일의 위치 등), 남은 일을 짧게 적습니다. 다음 턴에 화면을 다시 뒤지지 않아도 되게 쓰세요.
 - Slack 밖의 서비스에 로그인하거나, 결제·삭제처럼 되돌릴 수 없는 일은 하지 않습니다. 필요하면 Slack으로 사람에게 먼저 물어봅니다.
 - macOS 권한 요청 창("허용" 등)이나 보안 설정은 누르거나 바꾸지 않습니다. 당신 자신에게 권한을 주는 일은 사람이 직접 합니다. 그런 창이 화면을 가리면 하던 일을 멈추고, 상황을 턴의 마지막 말에 적어 두세요.`;
 }
 
-export function messagesPrompt(messages: readonly InboxMessage[], timeZone: string): string {
+/** How much of a conversation's history a turn is told, in characters (newest kept). */
+const HISTORY_CHARS = 6000;
+
+function memorySections(
+  memory: ConversationMemory,
+  timeZone: string,
+  skip: ReadonlySet<string> = new Set(),
+): string {
+  const said: string[] = [];
+  let used = 0;
+  for (const remark of [...memory.remarks].reverse()) {
+    if (skip.has(remark.ts)) continue;
+    const thread = remark.threadTs && remark.threadTs !== remark.ts ? ' · 스레드' : '';
+    const who = remark.own ? '나' : remark.userName;
+    const line = `[${slackTime(remark.ts, timeZone)}${thread}] ${who}: ${remark.text.replace(/\n/g, '\n  ')}`;
+    if (used + line.length > HISTORY_CHARS) break;
+    said.unshift(line);
+    used += line.length;
+  }
+  const notes = memory.notes.map(
+    (note) => `[${wallClock(new Date(note.at), timeZone)}] ${note.text}`,
+  );
+  return [
+    ...(said.length > 0 ? [`## 이 대화의 최근 기록 (오래된 것부터)\n${said.join('\n')}`] : []),
+    ...(notes.length > 0 ? [`## 지난 작업 기록 (오래된 것부터)\n${notes.join('\n\n')}`] : []),
+  ].join('\n\n');
+}
+
+function withMemory(memory: string, body: string): string {
+  return memory ? `${memory}\n\n${body}` : body;
+}
+
+export function messagesPrompt(
+  messages: readonly InboxMessage[],
+  timeZone: string,
+  memory: ConversationMemory = EMPTY_MEMORY,
+): string {
   const list = messages.map((m) => formatMessage(m, { timeZone })).join('\n\n');
-  return `새 Slack 메시지 ${messages.length}건이 왔습니다.
+  const fresh = new Set(messages.map((m) => m.ts));
+  return withMemory(
+    memorySections(memory, timeZone, fresh),
+    `## 새 Slack 메시지 ${messages.length}건이 왔습니다.
 
 ${list}
 
-필요한 만큼 Slack 화면에서 답하세요.`;
+필요한 만큼 Slack 화면에서 답하세요.`,
+  );
 }
 
-export function resumePrompt(note: string): string {
-  return `잠시 멈춰 두었던 일로 돌아왔습니다. 멈출 때 남긴 메모:
+export function resumePrompt(
+  note: string,
+  timeZone: string,
+  memory: ConversationMemory = EMPTY_MEMORY,
+): string {
+  return withMemory(
+    memorySections(memory, timeZone),
+    `## 잠시 멈춰 두었던 일로 돌아왔습니다. 멈출 때 남긴 메모:
 
 ${note}
 
-screenshot으로 지금 화면부터 확인하고 이어서 하세요.`;
+screenshot으로 지금 화면부터 확인하고 이어서 하세요.`,
+  );
 }

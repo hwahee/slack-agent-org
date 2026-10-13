@@ -78,9 +78,9 @@ describe('buildClaudeArgs', () => {
     expect(args.join(' ')).not.toContain('secret'); // the token stays in the 0600 file
   });
 
-  test('continues a session and picks a model when asked', () => {
-    const args = buildClaudeArgs({ ...base, model: 'opus' }, '/x.json', 's1');
-    expect(args.slice(-4)).toEqual(['--model', 'opus', '--resume', 's1']);
+  test('picks a model when asked', () => {
+    const args = buildClaudeArgs({ ...base, model: 'opus' }, '/x.json');
+    expect(args.slice(-2)).toEqual(['--model', 'opus']);
   });
 });
 
@@ -128,16 +128,6 @@ printf '{"type":"result","subtype":"success","is_error":false,"session_id":"new-
     const config = Bun.file(join(dir, 'workspace', 'desk-mcp.json'));
     expect(await config.text()).toContain('Bearer secret');
     expect(((await config.stat()).mode & 0o777).toString(8)).toBe('600');
-  });
-
-  test('starts over when the saved session is gone', async () => {
-    const bin = await fakeClaude(`
-cat > /dev/null
-case "$*" in
-  *--resume*) echo "No conversation found with session ID: old" >&2; exit 1 ;;
-esac
-echo '{"type":"result","subtype":"success","is_error":false,"session_id":"fresh","result":"ok"}'`);
-    expect((await engine(bin).run({ prompt: 'hi', sessionId: 'old' })).sessionId).toBe('fresh');
   });
 
   test('fails loudly when the CLI gives no result', async () => {

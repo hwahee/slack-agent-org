@@ -4,8 +4,8 @@ import type { ChannelType } from '../slack/types';
  * A message waiting for the agent — what a notification would show a person.
  *
  * One Slack conversation (a channel or a DM, threads included) is one
- * `conversation`, and one conversation keeps one engine session: the agent
- * remembers a channel the way a person does, not one thread at a time.
+ * `conversation`, and the runtime keeps one memory per conversation: the
+ * agent remembers a channel the way a person does, not one thread at a time.
  */
 export interface InboxMessage {
   /** `${channel}:${ts}` — unique per message. */
@@ -26,7 +26,7 @@ export interface InboxMessage {
 
 /** A turn the agent paused itself at a safe point, to be picked up again later. */
 export interface SuspendedTurn {
-  /** Resumed in this conversation's session, wherever that session has got to by then. */
+  /** Resumed with this conversation's memory, as it stands by then. */
   readonly conversation: string;
   /** The agent's own note on where it stopped and what comes next. */
   readonly note: string;

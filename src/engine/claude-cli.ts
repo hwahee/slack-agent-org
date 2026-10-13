@@ -2,8 +2,10 @@
  * Engine driver: Claude Code CLI in print mode (`claude -p`).
  *
  * Runs with this machine's own Claude login — no API key in the process. Each
- * turn is one CLI run; a conversation's memory is a CLI session, continued
- * with `--resume`. The agent gets exactly the desk tools and nothing else:
+ * turn is one CLI run in a fresh session: what the agent remembers of a
+ * conversation is in the prompt (the runtime keeps it), so no turn carries
+ * the screens and clicks of every turn before it. The agent gets exactly the
+ * desk tools and nothing else:
  *
  *   --tools ""             no built-in tools (no shell, no file edits)
  *   --strict-mcp-config    no MCP servers but the desk
@@ -27,7 +29,7 @@ export interface ClaudeCliOptions {
   readonly systemPrompt: string;
   /** The desk tool server. */
   readonly tools: { readonly name: string; readonly url: string; readonly token: string };
-  /** Engine working directory; sessions are kept per directory, so it must not change. */
+  /** Engine working directory — outside any repository, so no CLAUDE.md is picked up. */
   readonly workDir: string;
   readonly log: Logger;
 }
@@ -107,7 +109,6 @@ export function parseStreamLine(line: string): StreamEvent[] {
 export function buildClaudeArgs(
   options: Pick<ClaudeCliOptions, 'bin' | 'model' | 'maxTurns' | 'systemPrompt' | 'tools'>,
   mcpConfigPath: string,
-  sessionId?: string,
 ): string[] {
   return [
     options.bin,
@@ -130,14 +131,10 @@ export function buildClaudeArgs(
     '--max-turns',
     String(options.maxTurns),
     ...(options.model ? ['--model', options.model] : []),
-    ...(sessionId ? ['--resume', sessionId] : []),
   ];
 }
 
 // ── driver ────────────────────────────────────────────────────────────────────
-
-/** Matches the CLI's complaint about a session it no longer has. */
-const MISSING_SESSION = /no conversation found|session.*not found/i;
 
 export function createClaudeCliEngine(options: ClaudeCliOptions): Engine {
   const { log } = options;
@@ -162,8 +159,8 @@ export function createClaudeCliEngine(options: ClaudeCliOptions): Engine {
     return prepared;
   }
 
-  async function runOnce(prompt: string, sessionId?: string) {
-    const proc = Bun.spawn(buildClaudeArgs(options, mcpConfigPath, sessionId), {
+  async function runOnce(prompt: string) {
+    const proc = Bun.spawn(buildClaudeArgs(options, mcpConfigPath), {
       cwd: options.workDir,
       stdin: new Blob([prompt]),
       stdout: 'pipe',
@@ -198,14 +195,9 @@ export function createClaudeCliEngine(options: ClaudeCliOptions): Engine {
   }
 
   return {
-    async run({ prompt, sessionId }) {
+    async run({ prompt }) {
       await prepare();
-      let attempt = await runOnce(prompt, sessionId);
-
-      if (!attempt.result && sessionId && MISSING_SESSION.test(attempt.stderr)) {
-        log.warn('engine session gone; starting a new one', { sessionId });
-        attempt = await runOnce(prompt);
-      }
+      const attempt = await runOnce(prompt);
       if (!attempt.result) {
         throw new EngineError(
           `${options.bin} exited with ${attempt.code} and no result: ${attempt.stderr.slice(-500)}`,

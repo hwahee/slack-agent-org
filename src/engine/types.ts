@@ -7,18 +7,20 @@
  * cooperative-interruption rules are the same for all of them.
  */
 
+/**
+ * One turn, from scratch. Engines keep nothing between turns: what the agent
+ * should remember of a conversation is in the prompt, kept by the runtime.
+ */
 export interface EngineTurn {
   readonly prompt: string;
-  /** Continue this session (the conversation's memory); absent = start a new one. */
-  readonly sessionId?: string;
 }
 
 export interface EngineResult {
-  /** The session to continue next time. */
+  /** The engine's own id for this run — for the log only. */
   readonly sessionId: string;
   /** False when the turn ended in an error (max turns, API error, …). */
   readonly ok: boolean;
-  /** The engine's closing words — a work log, never shown to anyone in Slack. */
+  /** The engine's closing words — its note to its next turn, never shown to anyone in Slack. */
   readonly summary: string;
   readonly costUsd?: number;
   readonly toolRoundTrips?: number;

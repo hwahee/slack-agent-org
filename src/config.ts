@@ -4,6 +4,9 @@
  * machine to another agent) is a pure `.env` change; no code changes.
  * Secrets are only ever read from the environment (see .env.example).
  */
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 import { s, toValidator, type Infer } from './validation';
 
 const slackUserId = s.string().check(s.regex(/^[UW][A-Z0-9]{2,}$/, 'a Slack user id (U…/W…)'));
@@ -35,6 +38,14 @@ const configValidator = toValidator(
     claudeBin: s._default(s.string().check(s.minLength(1)), 'claude'),
     /** Model alias or full name; unset = the CLI's default. */
     claudeModel: s.optional(s.string().check(s.minLength(1))),
+    /**
+     * Where the engine runs. Outside this repository on purpose: an engine
+     * started inside it would read the developers' CLAUDE.md on every call.
+     */
+    engineWorkDir: s._default(
+      s.string().check(s.minLength(1)),
+      join(homedir(), '.slack-agent-org', 'engine'),
+    ),
     /** Upper bound on tool round trips in one turn — a runaway brake, not an interrupt. */
     engineMaxTurns: s._default(s.int().check(s.gte(1), s.lte(500)), 80),
 
@@ -60,7 +71,7 @@ const configValidator = toValidator(
       'Asia/Seoul',
     ),
 
-    /** State (sessions, queue), logs, screenshots and the engine's working directory. */
+    /** State (conversation memory, queue), logs and screenshots. */
     dataDir: s._default(s.string().check(s.minLength(1)), 'data'),
   }),
 );
@@ -94,6 +105,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     engineDriver: emptyToUndefined(env.ENGINE_DRIVER),
     claudeBin: emptyToUndefined(env.CLAUDE_BIN),
     claudeModel: emptyToUndefined(env.CLAUDE_MODEL),
+    engineWorkDir: emptyToUndefined(env.ENGINE_WORK_DIR),
     engineMaxTurns: numberOrUndefined(env.ENGINE_MAX_TURNS),
     deskHelperPath: emptyToUndefined(env.DESK_HELPER_PATH),
     deskMaxEdge: numberOrUndefined(env.DESK_MAX_EDGE),

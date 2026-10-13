@@ -1,9 +1,13 @@
 /**
  * The agent runtime — one agent, one desk, one turn at a time.
  *
+ * Every turn starts the engine afresh. The runtime owns what the agent
+ * remembers of a conversation (what was said, and the note the agent left at
+ * the end of each turn) and tells it as text at the start of the next turn.
+ *
  * Loop:
  *   1. The oldest waiting conversation gets a turn (all of its waiting
- *      messages at once), in that conversation's own engine session.
+ *      messages at once).
  *   2. With nothing waiting, the most recently paused task resumes.
  *   3. With nothing at all, it sleeps until the ears hear something.
  *
@@ -14,9 +18,9 @@
  */
 import type { Engine } from '../engine/types';
 import type { Inbox } from '../inbox/inbox';
-import type { InboxMessage, QueueSnapshot, SuspendedTurn } from '../inbox/types';
+import type { QueueSnapshot, SuspendedTurn } from '../inbox/types';
 import { describeError, type Logger } from '../lib/log';
-import type { StateStore } from '../state/types';
+import type { ConversationMemory, StateStore } from '../state/types';
 import type { TurnControl } from '../tools/types';
 import { messagesPrompt, resumePrompt } from './prompts';
 
@@ -64,33 +68,42 @@ export class AgentRuntime implements TurnControl {
   async run(signal: AbortSignal): Promise<void> {
     const { inbox } = this.deps;
     while (!signal.aborted) {
+      const { timeZone } = this.deps;
       const batch = inbox.takeNextConversation();
       if (batch) {
-        await this.turn(batch.conversation, this.promptFor(batch.messages));
+        await this.turn(batch.conversation, (memory) =>
+          messagesPrompt(batch.messages, timeZone, memory),
+        );
         continue;
       }
       const paused = this.suspended.pop();
       if (paused) {
-        await this.turn(paused.conversation, resumePrompt(paused.note));
+        await this.turn(paused.conversation, (memory) =>
+          resumePrompt(paused.note, timeZone, memory),
+        );
         continue;
       }
       await inbox.waitForMessage(signal);
     }
   }
 
-  private promptFor(messages: readonly InboxMessage[]): string {
-    return messagesPrompt(messages, this.deps.timeZone);
-  }
-
-  private async turn(conversation: string, prompt: string): Promise<void> {
+  private async turn(
+    conversation: string,
+    prompt: (memory: ConversationMemory) => string,
+  ): Promise<void> {
     const { engine, state, log } = this.deps;
     const current: CurrentTurn = { conversation };
     this.current = current;
     const started = Date.now();
     try {
-      const sessionId = await state.sessionOf(conversation);
-      const result = await engine.run({ prompt, ...(sessionId && { sessionId }) });
-      await state.saveSession(conversation, result.sessionId);
+      const memory = await state.memoryOf(conversation);
+      const result = await engine.run({ prompt: prompt(memory) });
+      if (result.summary.trim()) {
+        await state.addNote(conversation, {
+          at: new Date().toISOString(),
+          text: result.summary.trim(),
+        });
+      }
 
       const fields = {
         conversation,
