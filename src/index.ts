@@ -84,6 +84,7 @@ async function shutdown(signal: string): Promise<void> {
   log.info('shutdown initiated; waiting for the current turn to end', { signal });
 
   await container.listener().stop();
+  await container.triage()?.stop();
   stop.abort();
   await running;
   await container.state().saveQueue(runtime.snapshot());

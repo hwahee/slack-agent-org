@@ -30,6 +30,21 @@ export interface Engine {
   run(turn: EngineTurn): Promise<EngineResult>;
 }
 
+/**
+ * A quick look without the desk: a question in, an answer out, no tools.
+ * Used to decide whether a channel message is one the agent should answer —
+ * the glance at a notification a person makes before deciding to reply. It
+ * is not a turn: it never touches the screen, so it may run while one does.
+ */
+export interface Judge {
+  ask(prompt: string): Promise<JudgeAnswer>;
+}
+
+interface JudgeAnswer {
+  readonly text: string;
+  readonly costUsd?: number;
+}
+
 /** The engine could not run a turn at all (not installed, not logged in, crashed). */
 export class EngineError extends Error {
   constructor(message: string) {

@@ -12,7 +12,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { loadConfig } from './config';
 import { createContainer, type Container } from './container';
 import { createMemoryDesk } from './desk/memory';
-import type { Engine, EngineTurn } from './engine/types';
+import type { Engine, EngineTurn, Judge } from './engine/types';
 import { silentLogger } from './lib/log';
 import { createMemoryDirectory, createMemoryListener } from './slack/memory';
 import { createMemoryStateStore } from './state/memory';
@@ -22,7 +22,23 @@ const HUMAN = 'U0HUMAN';
 
 let container: Container | undefined;
 
+/** A judge that never thinks the agent should chime in. */
+const quietJudge: Judge = {
+  ask: () => Promise.resolve({ text: '{"respond": false, "reason": "잡담"}' }),
+};
+
+const config = (env: Record<string, string> = {}) =>
+  loadConfig({
+    AGENT_NAME: '클로이',
+    AGENT_SLACK_USER_ID: AGENT,
+    HUMAN_SLACK_USER_IDS: HUMAN,
+    SLACK_APP_TOKEN: 'xapp-test',
+    SLACK_READ_TOKEN: 'xoxp-test',
+    ...env,
+  });
+
 afterEach(async () => {
+  await container?.triage()?.stop();
   await container?.toolServer().stop();
   container = undefined;
 });
@@ -71,26 +87,18 @@ describe('agent', () => {
       },
     };
 
-    container = createContainer(
-      loadConfig({
-        AGENT_NAME: '클로이',
-        AGENT_SLACK_USER_ID: AGENT,
-        HUMAN_SLACK_USER_IDS: HUMAN,
-        SLACK_APP_TOKEN: 'xapp-test',
-        SLACK_READ_TOKEN: 'xoxp-test',
+    container = createContainer(config(), {
+      log: silentLogger,
+      listener,
+      directory: createMemoryDirectory({
+        users: { [HUMAN]: '지훈', [AGENT]: '클로이' },
+        channels: { C1: 'team' },
       }),
-      {
-        log: silentLogger,
-        listener,
-        directory: createMemoryDirectory({
-          users: { [HUMAN]: '지훈', [AGENT]: '클로이' },
-          channels: { C1: 'team' },
-        }),
-        desk,
-        state: createMemoryStateStore(),
-        engine,
-      },
-    );
+      desk,
+      state: createMemoryStateStore(),
+      engine,
+      judge: quietJudge,
+    });
 
     const intake = container.intake();
     await container.listener().start((event) => void intake(event));
@@ -109,6 +117,7 @@ describe('agent', () => {
       ts: '1.0',
     });
     await Bun.sleep(0); // intake resolves names asynchronously
+    await container.triage()?.flush(); // the channel chatter gets its glance: stay quiet
 
     await container.runtime().run(stop.signal);
 
@@ -138,5 +147,52 @@ describe('agent', () => {
     expect((await container.state().memoryOf('C1')).remarks.map((r) => r.text)).toEqual([
       '점심 뭐 먹지',
     ]);
+  });
+
+  test('answers an overheard channel question when triage says it should', async () => {
+    const listener = createMemoryListener();
+    const stop = new AbortController();
+    const turns: EngineTurn[] = [];
+    const judge: Judge = {
+      ask: () =>
+        Promise.resolve({
+          text: '{"respond": true, "reason": "모두에게 던진 질문이고 답이 없음"}',
+        }),
+    };
+    const engine: Engine = {
+      run(turn) {
+        turns.push(turn);
+        stop.abort();
+        return Promise.resolve({ sessionId: 'session-1', ok: true, summary: '스레드에 답함' });
+      },
+    };
+    container = createContainer(config({ TRIAGE_WAIT_SECONDS: '0' }), {
+      log: silentLogger,
+      listener,
+      directory: createMemoryDirectory({ users: { [HUMAN]: '지훈' }, channels: { C1: 'team' } }),
+      desk: createMemoryDesk(),
+      state: createMemoryStateStore(),
+      engine,
+      judge,
+    });
+
+    const intake = container.intake();
+    await container.listener().start((event) => void intake(event));
+    listener.emit({
+      channel: 'C1',
+      channelType: 'channel',
+      user: HUMAN,
+      text: '배포 어디까지 됐는지 아는 사람?',
+      ts: '1.0',
+    });
+    await Bun.sleep(0);
+    await container.triage()?.flush();
+
+    await container.runtime().run(stop.signal);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.prompt).toContain('#team · 지훈');
+    expect(turns[0]?.prompt).toContain('나를 부르지 않은 채널 글');
+    expect(turns[0]?.prompt).toContain('모두에게 던진 질문이고 답이 없음');
   });
 });

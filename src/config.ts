@@ -16,6 +16,8 @@ const configValidator = toValidator(
     /** Who this agent is. The name appears in its own prompt; the id is how Slack knows it. */
     agentName: s.string().check(s.minLength(1)),
     agentSlackUserId: slackUserId,
+    /** What the agent is on the team for, in its own prompt and in triage. Unset = no assigned work yet. */
+    agentRole: s.optional(s.string().check(s.minLength(1))),
     /**
      * People in the workspace. A message from one of them resets the loop guard
      * (`maxAgentExchanges`), so at least one is required.
@@ -32,6 +34,15 @@ const configValidator = toValidator(
      * between, it stops answering non-humans there (agent ↔ agent loop guard).
      */
     maxAgentExchanges: s._default(s.int().check(s.gte(1), s.lte(50)), 4),
+    /**
+     * Channel triage: channel messages that do not address the agent get a
+     * glance from a small model that decides whether it should answer anyway.
+     */
+    channelTriage: s._default(s.enum(['on', 'off']), 'on'),
+    /** The judge's model (alias or full name); empty = the CLI's default. */
+    triageModel: s._default(s.string(), 'haiku'),
+    /** Seconds a channel's overheard messages gather before one glance at them all. */
+    triageWaitSeconds: s._default(s.int().check(s.gte(0), s.lte(600)), 30),
 
     /** The engine that thinks. Drivers are swapped here, never in code. */
     engineDriver: s._default(s.enum(['claude-cli']), 'claude-cli'),
@@ -97,11 +108,15 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const config = configValidator.parse({
     agentName: env.AGENT_NAME,
     agentSlackUserId: env.AGENT_SLACK_USER_ID,
+    agentRole: emptyToUndefined(env.AGENT_ROLE),
     humanSlackUserIds: list(env.HUMAN_SLACK_USER_IDS),
     slackAppToken: env.SLACK_APP_TOKEN,
     slackReadToken: env.SLACK_READ_TOKEN,
     slackClient: emptyToUndefined(env.SLACK_CLIENT),
     maxAgentExchanges: numberOrUndefined(env.MAX_AGENT_EXCHANGES),
+    channelTriage: emptyToUndefined(env.CHANNEL_TRIAGE),
+    triageModel: env.TRIAGE_MODEL,
+    triageWaitSeconds: numberOrUndefined(env.TRIAGE_WAIT_SECONDS),
     engineDriver: emptyToUndefined(env.ENGINE_DRIVER),
     claudeBin: emptyToUndefined(env.CLAUDE_BIN),
     claudeModel: emptyToUndefined(env.CLAUDE_MODEL),

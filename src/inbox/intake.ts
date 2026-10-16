@@ -1,6 +1,9 @@
 /**
  * Ears → inbox: every heard message passes the addressing rules, gets the
- * names a person would see, and lands in the inbox.
+ * names a person would see, and lands in the inbox — or, when the agent only
+ * overheard it in a channel, goes to triage, which decides whether it should
+ * answer anyway (../agent/triage.ts). Without triage, overheard messages are
+ * only remembered.
  *
  * Whatever is said in a conversation is also remembered — messages for the
  * agent, the agent's own (sent on screen, heard here), and the rest of a
@@ -19,15 +22,19 @@ export interface IntakeDeps {
   readonly directory: SlackDirectory;
   readonly inbox: Inbox;
   readonly state: Pick<StateStore, 'remember'>;
+  /** Where overheard channel messages go for a glance; absent = they are only remembered. */
+  readonly triage?: { consider(message: InboxMessage): void };
   readonly log: Logger;
 }
 
 /** Said by someone in the conversation (the agent too), as opposed to a redelivery or bookkeeping. */
 function wasSaid(verdict: Verdict): boolean {
-  return verdict.deliver || ['self', 'not-addressed', 'loop-guard'].includes(verdict.reason);
+  return (
+    verdict.deliver || ['self', 'not-addressed', 'overheard', 'loop-guard'].includes(verdict.reason)
+  );
 }
 
-export function createIntake({ addressing, directory, inbox, state, log }: IntakeDeps) {
+export function createIntake({ addressing, directory, inbox, state, triage, log }: IntakeDeps) {
   async function remember(event: SlackMessageEvent, own: boolean): Promise<void> {
     if (!event.user) return;
     try {
@@ -48,7 +55,8 @@ export function createIntake({ addressing, directory, inbox, state, log }: Intak
     if (wasSaid(verdict)) {
       await remember(event, !verdict.deliver && verdict.reason === 'self');
     }
-    if (!verdict.deliver) {
+    const overheard = !verdict.deliver && verdict.reason === 'overheard' && triage !== undefined;
+    if (!verdict.deliver && !overheard) {
       log.debug('message not delivered', {
         channel: event.channel,
         ts: event.ts,
@@ -56,7 +64,7 @@ export function createIntake({ addressing, directory, inbox, state, log }: Intak
       });
       return;
     }
-    // `observe` only delivers messages with an author.
+    // `observe` only delivers (or overhears) messages with an author.
     const user = event.user ?? '';
     const [userName, channelName] = await Promise.all([
       directory.userName(user),
@@ -75,6 +83,11 @@ export function createIntake({ addressing, directory, inbox, state, log }: Intak
       text: event.text,
       receivedAt: new Date().toISOString(),
     };
+    if (overheard) {
+      triage.consider(message);
+      log.debug('message overheard', { id: message.id, from: userName, channel: channelName });
+      return;
+    }
     inbox.push(message);
     log.info('message received', { id: message.id, from: userName, channel: channelName || 'DM' });
   };

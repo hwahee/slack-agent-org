@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { silentLogger } from '../lib/log';
-import { buildClaudeArgs, createClaudeCliEngine, parseStreamLine } from './claude-cli';
+import {
+  buildClaudeArgs,
+  buildJudgeArgs,
+  createClaudeCliEngine,
+  createClaudeCliJudge,
+  parseStreamLine,
+} from './claude-cli';
 import { EngineError } from './types';
 
 const tools = { name: 'desk', url: 'http://127.0.0.1:1/mcp', token: 'secret' };
@@ -84,6 +90,20 @@ describe('buildClaudeArgs', () => {
   });
 });
 
+describe('buildJudgeArgs', () => {
+  test('the judge gets no tools, no MCP servers, one answer, and its own model', () => {
+    const args = buildJudgeArgs({ bin: 'claude', systemPrompt: 'judge', model: 'haiku' });
+    const after = (flag: string) => args[args.indexOf(flag) + 1];
+    expect(after('--tools')).toBe('');
+    expect(args).toContain('--strict-mcp-config');
+    expect(args).not.toContain('--mcp-config');
+    expect(args).not.toContain('--allowedTools');
+    expect(after('--permission-mode')).toBe('dontAsk');
+    expect(after('--max-turns')).toBe('1');
+    expect(after('--model')).toBe('haiku');
+  });
+});
+
 describe('createClaudeCliEngine', () => {
   let dir: string;
 
@@ -133,5 +153,24 @@ printf '{"type":"result","subtype":"success","is_error":false,"session_id":"new-
   test('fails loudly when the CLI gives no result', async () => {
     const bin = await fakeClaude('cat > /dev/null; echo "not logged in" >&2; exit 1');
     await expect(engine(bin).run({ prompt: 'hi' })).rejects.toThrow(EngineError);
+  });
+
+  test('the judge answers with the result text, and fails on an error result', async () => {
+    const judge = (bin: string) =>
+      createClaudeCliJudge({
+        bin,
+        systemPrompt: 'judge',
+        workDir: join(dir, 'workspace'),
+        log: silentLogger,
+      });
+    const answers = await fakeClaude(`
+cat > /dev/null
+printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"j1","result":"{\\"respond\\": false}","total_cost_usd":0.001}'`);
+    expect(await judge(answers).ask('q')).toEqual({ text: '{"respond": false}', costUsd: 0.001 });
+
+    const fails = await fakeClaude(`
+cat > /dev/null
+echo '{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"j2"}'`);
+    await expect(judge(fails).ask('q')).rejects.toThrow(EngineError);
   });
 });

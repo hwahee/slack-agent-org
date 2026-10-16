@@ -14,13 +14,16 @@
  *
  * The run is never cut short from outside (CLAUDE.md: cooperative only);
  * `--max-turns` is the brake for a run that will not end on its own.
+ *
+ * The same CLI also serves as the {@link Judge} (channel triage): one answer,
+ * no tools and no MCP servers at all, usually on a smaller model.
  */
 import { chmod, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { Logger } from '../lib/log';
 import { s, toValidator } from '../validation';
-import { EngineError, type Engine, type EngineResult } from './types';
+import { EngineError, type Engine, type EngineResult, type Judge } from './types';
 
 export interface ClaudeCliOptions {
   readonly bin: string;
@@ -134,7 +137,81 @@ export function buildClaudeArgs(
   ];
 }
 
+export interface ClaudeCliJudgeOptions {
+  readonly bin: string;
+  readonly model?: string;
+  readonly systemPrompt: string;
+  /** Outside any repository, like the engine's. */
+  readonly workDir: string;
+  readonly log: Logger;
+}
+
+/** The judge sees no tools and no MCP servers, and answers once. */
+export function buildJudgeArgs(
+  options: Pick<ClaudeCliJudgeOptions, 'bin' | 'model' | 'systemPrompt'>,
+): string[] {
+  return [
+    options.bin,
+    '--print',
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    '--system-prompt',
+    options.systemPrompt,
+    '--tools',
+    '',
+    '--strict-mcp-config',
+    '--permission-mode',
+    'dontAsk',
+    '--disable-slash-commands',
+    '--max-turns',
+    '1',
+    ...(options.model ? ['--model', options.model] : []),
+  ];
+}
+
 // ── driver ────────────────────────────────────────────────────────────────────
+
+/** Runs the CLI once with `prompt` on stdin and returns its result event (or throws). */
+async function runCli(args: string[], prompt: string, cwd: string, log: Logger) {
+  const proc = Bun.spawn(args, {
+    cwd,
+    stdin: new Blob([prompt]),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const stderrText = new Response(proc.stderr).text();
+
+  let result: EngineResult | undefined;
+  let buffered = '';
+  const decoder = new TextDecoder();
+  const handle = (line: string) => {
+    for (const event of parseStreamLine(line)) {
+      if (event.kind === 'tool') log.debug('agent tool', { tool: event.name });
+      else if (event.kind === 'text') log.debug('agent says', { text: event.text });
+      else if (event.kind === 'init') log.debug('engine session', { sessionId: event.sessionId });
+      else {
+        const { kind: _kind, ...rest } = event;
+        result = rest;
+      }
+    }
+  };
+  for await (const chunk of proc.stdout) {
+    buffered += decoder.decode(chunk, { stream: true });
+    const lines = buffered.split('\n');
+    buffered = lines.pop() ?? '';
+    lines.forEach(handle);
+  }
+  if (buffered) handle(buffered);
+
+  const code = await proc.exited;
+  if (!result) {
+    throw new EngineError(
+      `${args[0]} exited with ${code} and no result: ${(await stderrText).trim().slice(-500)}`,
+    );
+  }
+  return result;
+}
 
 export function createClaudeCliEngine(options: ClaudeCliOptions): Engine {
   const { log } = options;
@@ -159,51 +236,26 @@ export function createClaudeCliEngine(options: ClaudeCliOptions): Engine {
     return prepared;
   }
 
-  async function runOnce(prompt: string) {
-    const proc = Bun.spawn(buildClaudeArgs(options, mcpConfigPath), {
-      cwd: options.workDir,
-      stdin: new Blob([prompt]),
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    const stderrText = new Response(proc.stderr).text();
-
-    let result: EngineResult | undefined;
-    let buffered = '';
-    const decoder = new TextDecoder();
-    const handle = (line: string) => {
-      for (const event of parseStreamLine(line)) {
-        if (event.kind === 'tool') log.debug('agent tool', { tool: event.name });
-        else if (event.kind === 'text') log.debug('agent says', { text: event.text });
-        else if (event.kind === 'init') log.debug('engine session', { sessionId: event.sessionId });
-        else {
-          const { kind: _kind, ...rest } = event;
-          result = rest;
-        }
-      }
-    };
-    for await (const chunk of proc.stdout) {
-      buffered += decoder.decode(chunk, { stream: true });
-      const lines = buffered.split('\n');
-      buffered = lines.pop() ?? '';
-      lines.forEach(handle);
-    }
-    if (buffered) handle(buffered);
-
-    const code = await proc.exited;
-    return { result, code, stderr: (await stderrText).trim() };
-  }
-
   return {
     async run({ prompt }) {
       await prepare();
-      const attempt = await runOnce(prompt);
-      if (!attempt.result) {
-        throw new EngineError(
-          `${options.bin} exited with ${attempt.code} and no result: ${attempt.stderr.slice(-500)}`,
-        );
-      }
-      return attempt.result;
+      return runCli(buildClaudeArgs(options, mcpConfigPath), prompt, options.workDir, log);
+    },
+  };
+}
+
+export function createClaudeCliJudge(options: ClaudeCliJudgeOptions): Judge {
+  let prepared: Promise<unknown> | undefined;
+  return {
+    async ask(prompt) {
+      prepared ??= mkdir(options.workDir, { recursive: true });
+      await prepared;
+      const result = await runCli(buildJudgeArgs(options), prompt, options.workDir, options.log);
+      if (!result.ok) throw new EngineError(`the judge ended with an error: ${result.summary}`);
+      return {
+        text: result.summary,
+        ...(result.costUsd !== undefined && { costUsd: result.costUsd }),
+      };
     },
   };
 }

@@ -45,8 +45,14 @@ export function formatMessage(message: InboxMessage, options: FormatOptions): st
       ? `${message.text.slice(0, options.maxText)}…`
       : message.text;
   const header = `[${message.id}] ${where(message)}${thread} · ${message.userName} · ${slackTime(message.ts, options.timeZone)}`;
-  return `${header}\n${text
+  const body = text
     .split('\n')
     .map((line) => `  ${line}`)
-    .join('\n')}`;
+    .join('\n');
+  if (!message.triage) return `${header}\n${body}`;
+  return (
+    `${header} · 나를 부르지 않은 채널 글\n${body}\n` +
+    `  ↳ 답할 만하다고 판단한 이유: ${message.triage.reason}\n` +
+    '  ↳ 답하기 전에 화면에서 최신 대화를 확인하세요. 그사이 다른 사람이 답했거나 끝난 이야기면 답하지 않고 넘어갑니다.'
+  );
 }
