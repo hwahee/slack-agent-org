@@ -31,13 +31,31 @@ describe('Addressing', () => {
     expect(a.observe(message({ channel: 'G1', channelType: 'mpim' }))).toEqual({ deliver: true });
   });
 
-  test('in channels, delivers only what mentions the agent', () => {
+  test('in channels, delivers what mentions the agent and overhears the rest', () => {
     const a = addressing();
+    expect(a.observe(message({ text: `<@${AGENT}> lunch?` }))).toEqual({ deliver: true });
+    expect(a.observe(message({ text: `<@${AGENT}|클로이> lunch?` }))).toEqual({ deliver: true });
+    // Nobody asked the agent, but it might be the one to answer: triage decides.
     expect(a.observe(message({ text: 'lunch?' }))).toEqual({
+      deliver: false,
+      reason: 'overheard',
+    });
+    expect(a.observe(message({ threadTs: '999.000', text: 'in a thread' }))).toEqual({
+      deliver: false,
+      reason: 'overheard',
+    });
+  });
+
+  test('a channel message that singles out someone else is not the agent’s', () => {
+    const a = addressing();
+    expect(a.observe(message({ text: `<@${OTHER_AGENT}> 이거 봐 줄래?` }))).toEqual({
       deliver: false,
       reason: 'not-addressed',
     });
-    expect(a.observe(message({ text: `<@${AGENT}> lunch?` }))).toEqual({ deliver: true });
+    // …unless the agent is named too.
+    expect(a.observe(message({ text: `<@${OTHER_AGENT}> <@${AGENT}> 둘 다 봐 줘` }))).toEqual({
+      deliver: true,
+    });
   });
 
   test('follows a thread once the agent has posted in it', () => {
@@ -97,6 +115,19 @@ describe('Addressing', () => {
     // A human is always answered, and speaking resets the run.
     expect(a.observe(message({ text: `<@${AGENT}> wrap it up` }))).toEqual({ deliver: true });
     expect(a.observe(fromGpt())).toEqual({ deliver: true });
+  });
+
+  test('the loop guard holds for overheard messages from agents too', () => {
+    const a = addressing(1);
+    a.observe(message({ user: AGENT, text: 'done' }));
+    expect(a.observe(message({ user: OTHER_AGENT, text: 'nice' }))).toEqual({
+      deliver: false,
+      reason: 'loop-guard',
+    });
+    expect(a.observe(message({ text: 'anyone free?' }))).toEqual({
+      deliver: false,
+      reason: 'overheard',
+    });
   });
 
   test('counts the run per channel', () => {

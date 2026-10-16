@@ -24,6 +24,19 @@ describe('loadConfig', () => {
       dataDir: 'data',
     });
     expect(config.claudeModel).toBeUndefined();
+    expect(config.agentRole).toBeUndefined();
+    expect(config).toMatchObject({
+      channelTriage: 'on',
+      triageModel: 'haiku',
+      triageWaitSeconds: 30,
+    });
+  });
+
+  test('channel triage can be turned off, and its model left to the CLI', () => {
+    const config = loadConfig({ ...minimal, CHANNEL_TRIAGE: 'off', TRIAGE_MODEL: '' });
+    expect(config.channelTriage).toBe('off');
+    expect(config.triageModel).toBe('');
+    expect(() => loadConfig({ ...minimal, CHANNEL_TRIAGE: 'maybe' })).toThrow();
   });
 
   test('rejects an unknown time zone', () => {

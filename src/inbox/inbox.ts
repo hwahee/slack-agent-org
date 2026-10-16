@@ -6,7 +6,10 @@
  * work by it: while busy, it only sees a short notice ("2 new messages") on the
  * results of its own tool calls, and chooses when to look (`peek`), take a
  * message into the current task (`take`), or pause the task (inbox_yield).
- * Between turns the runtime takes the next conversation in arrival order.
+ * Between turns the runtime takes the next conversation in arrival order —
+ * messages addressed to the agent first, then the ones it only overheard and
+ * chose to answer (`triage`), the way a person answers what was asked of them
+ * before chiming in elsewhere.
  */
 import type { InboxMessage } from './types';
 
@@ -53,9 +56,12 @@ export class Inbox {
     return taken;
   }
 
-  /** The conversation of the oldest waiting message, with all of its waiting messages. */
+  /**
+   * The conversation of the oldest message addressed to the agent (or, with
+   * none waiting, of the oldest overheard one), with all of its waiting messages.
+   */
   takeNextConversation(): ConversationBatch | null {
-    const first = this.pending[0];
+    const first = this.pending.find((m) => m.triage === undefined) ?? this.pending[0];
     if (!first) return null;
     const ids = this.pending.filter((m) => m.conversation === first.conversation).map((m) => m.id);
     return { conversation: first.conversation, messages: this.take(ids) };

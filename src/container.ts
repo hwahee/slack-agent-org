@@ -9,13 +9,14 @@
  */
 import { join, resolve } from 'node:path';
 
-import { systemPrompt } from './agent/prompts';
+import { systemPrompt, triageSystemPrompt } from './agent/prompts';
 import { AgentRuntime } from './agent/runtime';
+import { Triage } from './agent/triage';
 import type { Config } from './config';
 import { createMacDesk } from './desk/macos';
 import type { Desk } from './desk/types';
-import { createClaudeCliEngine } from './engine/claude-cli';
-import type { Engine } from './engine/types';
+import { createClaudeCliEngine, createClaudeCliJudge } from './engine/claude-cli';
+import type { Engine, Judge } from './engine/types';
 import { Addressing } from './inbox/addressing';
 import { Inbox } from './inbox/inbox';
 import { createIntake } from './inbox/intake';
@@ -41,6 +42,10 @@ export interface Container {
   /** Starts listening on first access. */
   toolServer(): ToolServer;
   engine(): Engine;
+  /** The tool-less quick look used by triage. */
+  judge(): Judge;
+  /** Null when channel triage is off. */
+  triage(): Triage | null;
   runtime(): AgentRuntime;
 }
 
@@ -51,6 +56,7 @@ export interface ContainerOverrides {
   desk?: Desk;
   state?: StateStore;
   engine?: Engine;
+  judge?: Judge;
 }
 
 /** Memoizes a factory — the singleton primitive used for every service. */
@@ -79,8 +85,9 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
   const directory = lazy(
     () => overrides.directory ?? createWebDirectory(config.slackReadToken, log),
   );
-  const intake = lazy(() =>
-    createIntake({
+  const intake = lazy(() => {
+    const overheard = triage();
+    return createIntake({
       addressing: new Addressing({
         agentUserId: config.agentSlackUserId,
         humanUserIds: config.humanSlackUserIds,
@@ -89,9 +96,10 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
       directory: directory(),
       inbox: inbox(),
       state: state(),
+      ...(overheard && { triage: overheard }),
       log,
-    }),
-  );
+    });
+  });
 
   const desk = lazy(
     () =>
@@ -138,6 +146,34 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
     }
   });
 
+  const judge = lazy((): Judge => {
+    if (overrides.judge) return overrides.judge;
+    switch (config.engineDriver) {
+      case 'claude-cli':
+        return createClaudeCliJudge({
+          bin: config.claudeBin,
+          ...(config.triageModel && { model: config.triageModel }),
+          systemPrompt: triageSystemPrompt(config),
+          workDir: resolve(config.engineWorkDir),
+          log,
+        });
+    }
+  });
+
+  const triage = lazy(() =>
+    config.channelTriage === 'on'
+      ? new Triage({
+          judge: judge(),
+          inbox: inbox(),
+          state: state(),
+          humanUserIds: config.humanSlackUserIds,
+          timeZone: config.timeZone,
+          waitMs: config.triageWaitSeconds * 1000,
+          log,
+        })
+      : null,
+  );
+
   const runtime = lazy(
     () =>
       new AgentRuntime({
@@ -160,6 +196,8 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
     state,
     toolServer,
     engine,
+    judge,
+    triage,
     runtime,
   };
 }

@@ -11,6 +11,8 @@ import { EMPTY_MEMORY, type ConversationMemory } from '../state/types';
 export interface PromptContext {
   readonly agentName: string;
   readonly agentSlackUserId: string;
+  /** What the agent is on the team for; unset while it has no assigned work. */
+  readonly agentRole?: string;
   readonly slackClient: 'desktop' | 'web';
   readonly timeZone: string;
 }
@@ -25,10 +27,14 @@ const OPEN_CLIENT = {
   web: 'Slack 탭이 앞에 없으면 브라우저를 앞으로 가져와 Slack 탭으로 갑니다.',
 } as const;
 
+function roleSection(agentRole: string | undefined, heading: string): string {
+  return agentRole ? `\n\n## ${heading}\n${agentRole}` : '';
+}
+
 export function systemPrompt(context: PromptContext): string {
-  const { agentName, agentSlackUserId, slackClient } = context;
+  const { agentName, agentSlackUserId, agentRole, slackClient } = context;
   return `당신은 ${agentName}입니다. 사람 한 명과 AI 에이전트들로 이루어진 작은 팀의 구성원이고, 지금 앞에 있는 이 컴퓨터가 당신의 업무용 컴퓨터입니다.
-당신의 Slack 멤버 ID는 ${agentSlackUserId}입니다. 메시지에 <@${agentSlackUserId}>가 있으면 당신을 부른 것입니다.
+당신의 Slack 멤버 ID는 ${agentSlackUserId}입니다. 메시지에 <@${agentSlackUserId}>가 있으면 당신을 부른 것입니다.${roleSection(agentRole, '당신의 역할')}
 
 ## 일하는 방식
 이 팀은 사람이든 에이전트든 모두 같은 방식으로 일합니다. 당신도 화면을 보고 마우스와 키보드로(click, move, scroll, type, key) 컴퓨터를 다룹니다. 메시지를 보내는 다른 방법은 없습니다.
@@ -44,7 +50,7 @@ Slack은 ${CLIENT_LABEL[slackClient]}으로 씁니다.
 답장하는 순서:
 1. screenshot으로 지금 화면을 파악합니다. ${OPEN_CLIENT[slackClient]}
 2. 대화로 갑니다. cmd+k(빠른 전환)를 누르고 채널 이름이나 사람 이름을 입력한 뒤 enter.
-3. 받은 메시지가 스레드 답글이면 그 스레드를 열어 스레드 입력창에 답합니다. 채널에서 불렸다면 그 메시지의 스레드에 답하는 것이 기본입니다. DM은 대화창에 바로 답합니다.
+3. 받은 메시지가 스레드 답글이면 그 스레드를 열어 스레드 입력창에 답합니다. 채널에서 불렸거나 부르지 않은 채널 글에 끼어든다면 그 메시지의 스레드에 답하는 것이 기본입니다. DM은 대화창에 바로 답합니다.
 4. 입력창을 클릭하고 type으로 씁니다. 줄을 바꿀 때는 key "shift+enter", 다 쓰면 key "enter"로 보냅니다.
 5. 보낸 뒤의 화면 변화에 보낸 글이 보이면 된 것입니다. 보이지 않으면 read_screen으로 확인하고, 잘못 보냈다면 사람이 하듯 고치거나 지웁니다.
 조작할 때마다 결과의 화면 변화로 예상대로 됐는지 확인하고, 로딩 중이면 wait로 기다립니다.
@@ -62,6 +68,7 @@ Slack은 ${CLIENT_LABEL[slackClient]}으로 씁니다.
 - 동료로서 자연스럽게, 상대의 언어와 말투에 맞춰 답합니다. 짧은 말에는 짧게.
 - 모르는 것과 할 수 없는 것은 솔직하게 말합니다.
 - 답이 필요 없는 메시지(끝난 대화, 단순 확인)에는 답하지 않아도 됩니다.
+- "나를 부르지 않은 채널 글"은 아무도 당신을 부르지 않았지만 당신이 답할 만하다고 판단해 넘어온 글입니다. 직접 받은 글보다 덜 급합니다. 답하기 전에 화면에서 최신 대화를 보고, 그사이 다른 사람이 답했거나 끝난 이야기면 답하지 않고 넘어갑니다.
 - 턴을 마칠 때 쓰는 마지막 말은 다음 턴의 당신에게 남기는 작업 기록이고, 누구에게도 전달되지 않습니다. 전할 말은 반드시 Slack 화면에서 보내세요. 작업 기록에는 한 일, 지금 상태(열어 둔 앱·창, 만든 파일의 위치 등), 남은 일을 짧게 적습니다. 다음 턴에 화면을 다시 뒤지지 않아도 되게 쓰세요.
 - Slack 밖의 서비스에 로그인하거나, 결제·삭제처럼 되돌릴 수 없는 일은 하지 않습니다. 필요하면 Slack으로 사람에게 먼저 물어봅니다.
 - macOS 권한 요청 창("허용" 등)이나 보안 설정은 누르거나 바꾸지 않습니다. 당신 자신에게 권한을 주는 일은 사람이 직접 합니다. 그런 창이 화면을 가리면 하던 일을 멈추고, 상황을 턴의 마지막 말에 적어 두세요.`;
@@ -128,5 +135,61 @@ export function resumePrompt(
 ${note}
 
 screenshot으로 지금 화면부터 확인하고 이어서 하세요.`,
+  );
+}
+
+// ── triage: should the agent chime in? ──────────────────────────────────────
+
+/** Who the glance is for. */
+export type TriageContext = Pick<PromptContext, 'agentName' | 'agentSlackUserId' | 'agentRole'>;
+
+/** The judge's standing instructions: decide, never write the reply. */
+export function triageSystemPrompt(context: TriageContext): string {
+  const { agentName, agentSlackUserId, agentRole } = context;
+  const role =
+    roleSection(agentRole, `${agentName}의 역할`) ||
+    `\n\n## ${agentName}의 역할\n아직 정해진 담당 업무가 없습니다. 팀의 일반 구성원으로 판단하세요.`;
+  return `당신은 팀원 ${agentName}(Slack 멤버 ID ${agentSlackUserId}) 대신 채널 알림을 훑어봅니다. 이 팀은 사람 한 명과 AI 에이전트들로 이루어져 있습니다.${role}
+
+채널에 멘션 없이 글이 올라왔습니다. 사람이 알림을 흘끗 보고 "이건 내가 답해야겠다"를 정하듯, ${agentName} 본인이 끼어들어 답해야 하는지만 판단하세요. 답장은 쓰지 않습니다.
+
+답해야 하는 경우:
+- 멘션 없이 이름(${agentName})을 부르거나, 분명히 ${agentName}에게 하는 말
+- 채널 모두에게 던진 질문·요청 중 ${agentName} 본인이 답할 수 있고 아직 아무도 답하지 않은 것
+- ${agentName} 본인이 한 말이나 한 일에 대한 반응·질문 (기록에서 "나"가 ${agentName} 본인입니다)
+- ${agentName}의 담당 업무에 관한 글
+
+답하지 않는 경우:
+- 다른 사람들 사이의 대화, 잡담, 혼잣말, 공지
+- 이미 누가 답했거나 끝난 이야기
+- 다른 사람을 지목한 말
+- 답해도 보탤 것이 없는 글
+AI 에이전트가 쓴 글에는 더 보수적으로, 분명히 필요할 때만 답합니다. 애매하면 답하지 않습니다. 끼어들지 않는 것이 기본입니다.
+
+출력은 JSON 한 줄뿐입니다. 다른 말은 쓰지 마세요.
+{"respond": true 또는 false, "ids": [답할 글의 id], "reason": "판단 이유 한 문장"}`;
+}
+
+export interface TriageCandidate {
+  readonly message: InboxMessage;
+  readonly fromHuman: boolean;
+}
+
+/** One glance: what was said before in the channel, then the new messages to judge. */
+export function triagePrompt(
+  candidates: readonly TriageCandidate[],
+  timeZone: string,
+  memory: ConversationMemory = EMPTY_MEMORY,
+): string {
+  const list = candidates
+    .map(
+      ({ message, fromHuman }) =>
+        `${formatMessage(message, { timeZone })}\n  (작성자: ${fromHuman ? '사람' : 'AI 에이전트'})`,
+    )
+    .join('\n\n');
+  const fresh = new Set(candidates.map(({ message }) => message.ts));
+  return withMemory(
+    memorySections(memory, timeZone, fresh),
+    `## 판단할 새 글 ${candidates.length}건\n\n${list}\n\n답해야 하는지 JSON 한 줄로 답하세요.`,
   );
 }

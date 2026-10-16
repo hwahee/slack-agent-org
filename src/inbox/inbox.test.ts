@@ -51,6 +51,19 @@ describe('Inbox', () => {
     expect(inbox.takeNextConversation()).toBeNull();
   });
 
+  test('answers what was asked before what was only overheard', () => {
+    const inbox = new Inbox();
+    inbox.push({ ...inboxMessage('1.0', 'C1'), triage: { reason: '모두에게 던진 질문' } });
+    inbox.push(inboxMessage('2.0', 'D1'));
+    inbox.push(inboxMessage('3.0', 'C1'));
+    inbox.push({ ...inboxMessage('4.0', 'C2'), triage: { reason: '내가 한 일에 대한 질문' } });
+
+    // The oldest message addressed to the agent decides; its conversation comes with all of it.
+    expect(inbox.takeNextConversation()?.conversation).toBe('D1');
+    expect(inbox.takeNextConversation()?.messages.map((m) => m.id)).toEqual(['C1:1.0', 'C1:3.0']);
+    expect(inbox.takeNextConversation()?.conversation).toBe('C2');
+  });
+
   test('wakes a waiter on the next message, or on abort', async () => {
     const inbox = new Inbox();
     const controller = new AbortController();
@@ -121,5 +134,40 @@ describe('intake', () => {
       'no mention',
       '<@U0AGENT> 리뷰 부탁해요',
     ]);
+  });
+
+  test('hands an overheard channel message to triage instead of the inbox', async () => {
+    const inbox = new Inbox();
+    const considered: string[] = [];
+    const intake = createIntake({
+      addressing: new Addressing({
+        agentUserId: 'U0AGENT',
+        humanUserIds: ['U0HUMAN'],
+        maxAgentExchanges: 3,
+      }),
+      directory: createMemoryDirectory({ users: { U0HUMAN: '지훈' }, channels: { C1: 'team' } }),
+      inbox,
+      state: createMemoryStateStore(),
+      triage: { consider: (message) => considered.push(`${message.channelName}:${message.text}`) },
+      log: silentLogger,
+    });
+
+    await intake({
+      channel: 'C1',
+      channelType: 'channel',
+      user: 'U0HUMAN',
+      text: '누구 배포 아는 분?',
+      ts: '1.0',
+    });
+    await intake({
+      channel: 'C1',
+      channelType: 'channel',
+      user: 'U0HUMAN',
+      text: '<@U0OTHER> 확인 좀',
+      ts: '2.0',
+    });
+
+    expect(considered).toEqual(['team:누구 배포 아는 분?']);
+    expect(inbox.size).toBe(0);
   });
 });

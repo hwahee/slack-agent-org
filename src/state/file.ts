@@ -33,6 +33,7 @@ const inboxMessage = s.object({
   userName: s.string(),
   text: s.string(),
   receivedAt: s.string(),
+  triage: s.optional(s.object({ reason: s.string() })),
 });
 
 const queue = s.object({

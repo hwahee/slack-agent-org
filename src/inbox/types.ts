@@ -22,6 +22,12 @@ export interface InboxMessage {
   readonly text: string;
   /** When the ears heard it (UTC ISO). */
   readonly receivedAt: string;
+  /**
+   * Set when nobody addressed the agent: it overheard this in a channel and,
+   * at a glance (./triage.ts), judged that it should answer — and why.
+   * Such messages wait behind the ones addressed to it.
+   */
+  readonly triage?: { readonly reason: string };
 }
 
 /** A turn the agent paused itself at a safe point, to be picked up again later. */
