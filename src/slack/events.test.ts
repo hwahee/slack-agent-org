@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { parseMessageEnvelope } from './events';
-import { findWriteScopes } from './scopes';
+import { allowedWriteScopes, findWriteScopes } from './scopes';
 
 function envelope(event: Record<string, unknown>) {
   return { team_id: 'T1', event_id: 'Ev1', event };
@@ -86,5 +86,15 @@ describe('findWriteScopes', () => {
 
   test('passes a read-only set', () => {
     expect(findWriteScopes(['im:history', 'users:read', 'channels:read'])).toEqual([]);
+  });
+
+  test('lets the status scope through only while SLACK_STATUS is on', () => {
+    const scopes = ['im:history', 'users.profile:write'];
+    expect(findWriteScopes(scopes, allowedWriteScopes('on'))).toEqual([]);
+    expect(findWriteScopes(scopes, allowedWriteScopes('off'))).toEqual(['users.profile:write']);
+    // Nothing else rides on the exception.
+    expect(
+      findWriteScopes(['users.profile:write', 'chat:write'], allowedWriteScopes('on')),
+    ).toEqual(['chat:write']);
   });
 });

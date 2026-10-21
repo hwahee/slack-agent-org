@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 import { renderPlist, SERVICE_LABEL } from '../src/ops/launchd';
+import { markRestart } from '../src/ops/restart';
 
 const repoDir = resolve(import.meta.dir, '..');
 const plistPath = join(homedir(), 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`);
@@ -61,6 +62,14 @@ async function install(): Promise<void> {
 }
 
 async function restart(): Promise<void> {
+  // Same SIGTERM as a stop; the marker is how the agent knows to say "back soon".
+  const configured = process.env.DATA_DIR; // same default as src/config.ts
+  const dataDir = resolve(
+    repoDir,
+    configured === undefined || configured === '' ? 'data' : configured,
+  );
+  await mkdir(dataDir, { recursive: true });
+  await markRestart(dataDir);
   const { code, output } = await launchctl('kill', 'SIGTERM', `${target}/${SERVICE_LABEL}`);
   if (code !== 0) throw new Error(`launchctl kill failed: ${output}`);
   console.log('SIGTERM sent — the agent finishes its current turn, then launchd starts it again');

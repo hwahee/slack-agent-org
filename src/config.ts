@@ -44,6 +44,13 @@ const configValidator = toValidator(
     /** Seconds a channel's overheard messages gather before one glance at them all. */
     triageWaitSeconds: s._default(s.int().check(s.gte(0), s.lte(600)), 30),
 
+    /**
+     * The agent keeps its Slack status current through the API (the one
+     * write the read token may hold: users.profile:write). Statuses:
+     * src/agent/status.ts.
+     */
+    slackStatus: s._default(s.enum(['on', 'off']), 'on'),
+
     /** The engine that thinks. Drivers are swapped here, never in code. */
     engineDriver: s._default(s.enum(['claude-cli']), 'claude-cli'),
     claudeBin: s._default(s.string().check(s.minLength(1)), 'claude'),
@@ -117,6 +124,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     channelTriage: emptyToUndefined(env.CHANNEL_TRIAGE),
     triageModel: env.TRIAGE_MODEL,
     triageWaitSeconds: numberOrUndefined(env.TRIAGE_WAIT_SECONDS),
+    slackStatus: emptyToUndefined(env.SLACK_STATUS),
     engineDriver: emptyToUndefined(env.ENGINE_DRIVER),
     claudeBin: emptyToUndefined(env.CLAUDE_BIN),
     claudeModel: emptyToUndefined(env.CLAUDE_MODEL),

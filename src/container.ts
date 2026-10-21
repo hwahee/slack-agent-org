@@ -22,8 +22,10 @@ import { Inbox } from './inbox/inbox';
 import { createIntake } from './inbox/intake';
 import { createLogger, type Logger } from './lib/log';
 import { createWebDirectory } from './slack/directory';
+import { allowedWriteScopes } from './slack/scopes';
 import { createSocketListener, openSocketUrl } from './slack/socket';
-import type { SlackDirectory, SlackListener } from './slack/types';
+import { createWebStatus } from './slack/status';
+import type { SlackDirectory, SlackListener, SlackStatus } from './slack/types';
 import { createFileStateStore } from './state/file';
 import type { StateStore } from './state/types';
 import { TOOL_SERVER_NAME, TOOLS } from './tools/catalog';
@@ -37,6 +39,8 @@ export interface Container {
   intake(): ReturnType<typeof createIntake>;
   listener(): SlackListener;
   directory(): SlackDirectory;
+  /** The agent's own Slack status — the one API write (src/slack/status.ts). */
+  status(): SlackStatus;
   desk(): Desk;
   state(): StateStore;
   /** Starts listening on first access. */
@@ -53,6 +57,7 @@ export interface ContainerOverrides {
   log?: Logger;
   listener?: SlackListener;
   directory?: SlackDirectory;
+  status?: SlackStatus;
   desk?: Desk;
   state?: StateStore;
   engine?: Engine;
@@ -83,8 +88,13 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
       createSocketListener({ openUrl: openSocketUrl(config.slackAppToken), log }),
   );
   const directory = lazy(
-    () => overrides.directory ?? createWebDirectory(config.slackReadToken, log),
+    () =>
+      overrides.directory ??
+      createWebDirectory(config.slackReadToken, log, {
+        allowedWriteScopes: allowedWriteScopes(config.slackStatus),
+      }),
   );
+  const status = lazy(() => overrides.status ?? createWebStatus(config.slackReadToken));
   const intake = lazy(() => {
     const overheard = triage();
     return createIntake({
@@ -192,6 +202,7 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
     intake,
     listener,
     directory,
+    status,
     desk,
     state,
     toolServer,

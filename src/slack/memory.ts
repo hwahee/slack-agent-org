@@ -8,7 +8,7 @@ export function createMemoryDirectory(
   names: { users?: Record<string, string>; channels?: Record<string, string> } = {},
 ): SlackDirectory {
   return {
-    assertReadOnly: () => Promise.resolve(),
+    assertReadOnly: () => Promise.resolve([]),
     userName: (id) => Promise.resolve(names.users?.[id] ?? id),
     channelName: (id) => Promise.resolve(names.channels?.[id] ?? id),
   };

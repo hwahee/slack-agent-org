@@ -8,7 +8,8 @@
  *   - {@link SlackDirectory}: read-only lookups, so a notification can say
  *     "#team · 지훈" instead of "C04… · U07…" — what a person would see.
  *
- * There is deliberately no third door. Replying happens on screen (src/desk).
+ * There is deliberately no door for messages. Replying happens on screen
+ * (src/desk). The one write is the agent's own status ({@link SlackStatus}).
  */
 
 export type ChannelType = 'im' | 'mpim' | 'channel' | 'group';
@@ -38,10 +39,23 @@ export interface SlackDirectory {
   /**
    * Fails when the token can do more than read (CLAUDE.md: sending never goes
    * through the API). Called once at boot, before anything is received.
+   * Resolves to the token's scopes.
    */
-  assertReadOnly(): Promise<void>;
+  assertReadOnly(): Promise<readonly string[]>;
   /** Display name; falls back to the id when the lookup fails. */
   userName(userId: string): Promise<string>;
   /** Channel name without `#`; falls back to the id when the lookup fails. */
   channelName(channelId: string): Promise<string>;
+}
+
+/** What the team sees next to the agent's name (src/agent/status.ts). */
+export interface StatusLook {
+  /** Emoji code, e.g. `:zzz:`. */
+  readonly emoji: string;
+  readonly text: string;
+}
+
+/** Sets the agent's own Slack status, never clearing on its own. */
+export interface SlackStatus {
+  set(look: StatusLook): Promise<void>;
 }

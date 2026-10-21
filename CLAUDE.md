@@ -15,6 +15,9 @@
   - `chat.postMessage` 등 Slack API로 보내는 코드를 만들지 않습니다. ESLint가 `src/slack` 밖의
     `@slack/*` import와 `src/slack` 안의 발신 네임스페이스(`chat`, `files`, `reactions`, `apiCall` …) 접근을 막습니다.
   - 쓰기 scope가 있는 토큰은 부팅 시 거부합니다(`assertReadOnly`). 이 검사를 완화하지 않습니다.
+  - **유일한 예외: 에이전트 자신의 Slack 상태.** 사람이 결정한 예외입니다(지켜보는 사람이 없는데 화면으로는 너무 느림).
+    `SLACK_STATUS=on`일 때만 `users.profile:write` 하나를 허용하고(`allowedWriteScopes`), 호출은 `src/slack/status.ts`의
+    `users.profile.set`(상태 필드만)뿐입니다. 이 예외를 메시지·반응·파일 등 다른 쓰기로 넓히지 않습니다.
   - 데스크톱 앱과 웹앱은 원칙상 차이가 없습니다(`SLACK_CLIENT`).
 - **수신은 Socket Mode.** 집 네트워크에 인바운드 포트를 열지 않습니다. 클라이언트는 Bun 내장 WebSocket으로 직접 구현한
   `src/slack/socket.ts`입니다. `@slack/socket-mode`(와 그것을 쓰는 `@slack/bolt`)는 Bun에서 연결이 계속 끊기므로 다시 들이지 않습니다.
