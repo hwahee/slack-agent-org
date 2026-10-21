@@ -15,6 +15,7 @@ import { loadConfig, type Config } from '../src/config';
 import { createMacDesk, type DeskPermissions } from '../src/desk/macos';
 import { describeError, silentLogger } from '../src/lib/log';
 import { createWebDirectory } from '../src/slack/directory';
+import { allowedWriteScopes, STATUS_SCOPE } from '../src/slack/scopes';
 import { createSocketListener, openSocketUrl } from '../src/slack/socket';
 
 let failures = 0;
@@ -140,10 +141,17 @@ await check(
 await check(
   'slack read token (read-only)',
   async () => {
-    await createWebDirectory(cfg.slackReadToken, silentLogger).assertReadOnly();
-    return 'no write scopes';
+    const scopes = await createWebDirectory(cfg.slackReadToken, silentLogger, {
+      allowedWriteScopes: allowedWriteScopes(cfg.slackStatus),
+    }).assertReadOnly();
+    if (cfg.slackStatus === 'off') return 'no write scopes';
+    if (!scopes.includes(STATUS_SCOPE)) {
+      throw new Error(`SLACK_STATUS=on but the token lacks ${STATUS_SCOPE}`);
+    }
+    return `no write scopes but ${STATUS_SCOPE} (SLACK_STATUS)`;
   },
-  'SLACK_READ_TOKEN의 쓰기 scope(chat:write 등)를 앱 설정에서 빼고 다시 설치하세요',
+  'SLACK_READ_TOKEN의 쓰기 scope(chat:write 등)를 앱 설정에서 빼고 다시 설치하세요. ' +
+    'SLACK_STATUS=on이면 User Token Scopes에 users.profile:write 하나만 더합니다(끄려면 SLACK_STATUS=off)',
 );
 await check(
   'slack socket mode',

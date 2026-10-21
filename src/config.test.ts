@@ -39,6 +39,12 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...minimal, CHANNEL_TRIAGE: 'maybe' })).toThrow();
   });
 
+  test('the Slack status is kept by default and can be turned off', () => {
+    expect(loadConfig(minimal).slackStatus).toBe('on');
+    expect(loadConfig({ ...minimal, SLACK_STATUS: 'off' }).slackStatus).toBe('off');
+    expect(() => loadConfig({ ...minimal, SLACK_STATUS: 'maybe' })).toThrow();
+  });
+
   test('rejects an unknown time zone', () => {
     expect(loadConfig(minimal).timeZone).toBe('Asia/Seoul');
     expect(() => loadConfig({ ...minimal, TIME_ZONE: 'Mars/Olympus' })).toThrow();

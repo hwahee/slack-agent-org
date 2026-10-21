@@ -17,11 +17,13 @@
 1. 에이전트용 Slack 멤버 계정을 준비하고 멤버 ID를 복사해 둡니다(프로필 → ⋮ → 멤버 ID 복사). 사람(당신)의 멤버 ID도 복사합니다.
 2. [api.slack.com/apps](https://api.slack.com/apps)에서 앱을 만듭니다(워크스페이스 관리자 계정).
 3. **Socket Mode** 켜기 → App-Level Token 생성(scope: `connections:write`) → `xapp-…` = `SLACK_APP_TOKEN`.
-4. **OAuth & Permissions → User Token Scopes** (모두 읽기 전용):
+4. **OAuth & Permissions → User Token Scopes** (읽기 전용 + 상태 하나):
    `im:history`, `mpim:history`, `channels:history`, `groups:history`,
    `users:read`, `channels:read`, `groups:read`, `im:read`, `mpim:read`.
+   예외로 **`users.profile:write`** 하나를 더합니다. 에이전트가 자기 Slack 상태를 API로 바꾸는 데만 씁니다
+   (`SLACK_STATUS=on`일 때만 허용, README "Slack 상태"). 다른 쓰기 scope는 넣지 않습니다.
    Bot Token Scopes는 필요 없습니다. 예전에 넣어 둔 `chat:write` 같은 쓰기 scope가 있다면 지웁니다
-   — 쓰기 scope가 있는 토큰으로는 에이전트가 아예 시작하지 않습니다.
+   — `users.profile:write` 외의 쓰기 scope가 있는 토큰으로는 에이전트가 아예 시작하지 않습니다.
 5. **Event Subscriptions** 켜기 → **Subscribe to events on behalf of users**에
    `message.im`, `message.mpim`, `message.channels`, `message.groups` 추가.
 6. **Settings → Collaborators**에 에이전트 계정을 추가합니다.
