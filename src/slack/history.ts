@@ -78,7 +78,10 @@ async function allPages<T>(
 }
 
 export function createWebHistory(token: string): SlackHistory {
-  const client = new WebClient(token);
+  // Bounded: a poll waits for the catch-up, so one unanswered request (or the
+  // client's default retries, which span about half an hour) must not stall
+  // every poll after it. A failed catch-up is simply covered by the next one.
+  const client = new WebClient(token, { timeout: 10_000, retryConfig: { retries: 2 } });
 
   return {
     async conversations() {
