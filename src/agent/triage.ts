@@ -21,6 +21,7 @@ import { describeError, type Logger } from '../lib/log';
 import type { StateStore } from '../state/types';
 import { s, toValidator } from '../validation';
 import { triagePrompt } from './prompts';
+import type { UsageLedger } from './usage';
 
 export interface TriageDeps {
   readonly judge: Judge;
@@ -32,6 +33,8 @@ export interface TriageDeps {
   /** How long a channel's overheard messages gather before one glance at them all. */
   readonly waitMs: number;
   readonly log: Logger;
+  /** Where each glance's cost is tallied. */
+  readonly usage?: Pick<UsageLedger, 'record'>;
 }
 
 export interface Decision {
@@ -142,6 +145,7 @@ export class Triage {
         fromHuman: this.humans.has(message.user),
       }));
       const answer = await judge.ask(triagePrompt(candidates, timeZone, memory));
+      void this.deps.usage?.record('triage', answer.costUsd);
       const decision = readDecision(
         answer.text,
         messages.map((m) => m.id),

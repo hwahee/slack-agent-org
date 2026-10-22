@@ -5,6 +5,10 @@
  * answer anyway (../agent/triage.ts). Without triage, overheard messages are
  * only remembered.
  *
+ * Messages the ears missed come in the same way, from the catch-up
+ * (./catchup.ts): marked as found late, or — when too old to answer — only
+ * remembered.
+ *
  * Whatever is said in a conversation is also remembered — messages for the
  * agent, the agent's own (sent on screen, heard here), and the rest of a
  * channel — so a turn can be told what was said before, the way a person
@@ -34,7 +38,24 @@ function wasSaid(verdict: Verdict): boolean {
   );
 }
 
-export function createIntake({ addressing, directory, inbox, state, triage, log }: IntakeDeps) {
+/** Where a message came from, when not straight from the ears. */
+interface IntakeOrigin {
+  /** Found by the catch-up: the ears never heard it. */
+  readonly missed?: boolean;
+  /** Too old to answer now: remember it, nothing more. */
+  readonly rememberOnly?: boolean;
+}
+
+export type Intake = (event: SlackMessageEvent, origin?: IntakeOrigin) => Promise<void>;
+
+export function createIntake({
+  addressing,
+  directory,
+  inbox,
+  state,
+  triage,
+  log,
+}: IntakeDeps): Intake {
   async function remember(event: SlackMessageEvent, own: boolean): Promise<void> {
     if (!event.user) return;
     try {
@@ -50,11 +71,12 @@ export function createIntake({ addressing, directory, inbox, state, triage, log 
     }
   }
 
-  return async function intake(event: SlackMessageEvent): Promise<void> {
+  return async function intake(event: SlackMessageEvent, origin: IntakeOrigin = {}): Promise<void> {
     const verdict = addressing.observe(event);
     if (wasSaid(verdict)) {
       await remember(event, !verdict.deliver && verdict.reason === 'self');
     }
+    if (origin.rememberOnly) return;
     const overheard = !verdict.deliver && verdict.reason === 'overheard' && triage !== undefined;
     if (!verdict.deliver && !overheard) {
       log.debug('message not delivered', {
@@ -82,6 +104,7 @@ export function createIntake({ addressing, directory, inbox, state, triage, log 
       userName,
       text: event.text,
       receivedAt: new Date().toISOString(),
+      ...(origin.missed && { missed: true as const }),
     };
     if (overheard) {
       triage.consider(message);
@@ -89,6 +112,11 @@ export function createIntake({ addressing, directory, inbox, state, triage, log 
       return;
     }
     inbox.push(message);
-    log.info('message received', { id: message.id, from: userName, channel: channelName || 'DM' });
+    log.info('message received', {
+      id: message.id,
+      from: userName,
+      channel: channelName || 'DM',
+      ...(origin.missed && { missed: true }),
+    });
   };
 }

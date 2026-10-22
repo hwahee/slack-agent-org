@@ -15,6 +15,7 @@ import { loadConfig, type Config } from '../src/config';
 import { createMacDesk, type DeskPermissions } from '../src/desk/macos';
 import { describeError, silentLogger } from '../src/lib/log';
 import { createWebDirectory } from '../src/slack/directory';
+import { createWebHistory } from '../src/slack/history';
 import { allowedWriteScopes, STATUS_SCOPE } from '../src/slack/scopes';
 import { createSocketListener, openSocketUrl } from '../src/slack/socket';
 
@@ -153,6 +154,16 @@ await check(
   'SLACK_READ_TOKEN의 쓰기 scope(chat:write 등)를 앱 설정에서 빼고 다시 설치하세요. ' +
     'SLACK_STATUS=on이면 User Token Scopes에 users.profile:write 하나만 더합니다(끄려면 SLACK_STATUS=off)',
 );
+if (cfg.catchup === 'on') {
+  await check(
+    'slack history (catch-up)',
+    async () => {
+      const conversations = await createWebHistory(cfg.slackReadToken).conversations();
+      return `can list the ${conversations.length} conversations it would catch up on`;
+    },
+    'User Token Scopes에 channels:read·groups:read·im:read·mpim:read와 *:history가 있는지 확인하고 다시 설치하세요 (끄려면 CATCHUP=off)',
+  );
+}
 await check(
   'slack socket mode',
   async () => {

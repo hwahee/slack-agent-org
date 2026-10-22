@@ -14,7 +14,8 @@ import { createContainer, type Container } from './container';
 import { createMemoryDesk } from './desk/memory';
 import type { Engine, EngineTurn, Judge } from './engine/types';
 import { silentLogger } from './lib/log';
-import { createMemoryDirectory, createMemoryListener } from './slack/memory';
+import { createMemoryDirectory, createMemoryHistory, createMemoryListener } from './slack/memory';
+import type { StatusLook } from './slack/types';
 import { createMemoryStateStore } from './state/memory';
 
 const AGENT = 'U0AGENT';
@@ -194,5 +195,63 @@ describe('agent', () => {
     expect(turns[0]?.prompt).toContain('#team · 지훈');
     expect(turns[0]?.prompt).toContain('나를 부르지 않은 채널 글');
     expect(turns[0]?.prompt).toContain('모두에게 던진 질문이고 답이 없음');
+  });
+
+  test('on reconnecting, answers a DM sent while nobody was listening, and shows it is fine', async () => {
+    const listener = createMemoryListener();
+    const history = createMemoryHistory();
+    const state = createMemoryStateStore();
+    const shown: StatusLook[] = [];
+    const stop = new AbortController();
+    const turns: EngineTurn[] = [];
+    const now = Date.now();
+    await state.setHeardUntil(new Date(now - 10 * 60_000).toISOString());
+    history.post({
+      channel: 'D1',
+      channelType: 'im',
+      user: HUMAN,
+      text: '자리 비운 사이에 보낸 질문',
+      ts: ((now - 5 * 60_000) / 1000).toFixed(6),
+    });
+    container = createContainer(config(), {
+      log: silentLogger,
+      listener,
+      history,
+      directory: createMemoryDirectory({ users: { [HUMAN]: '지훈' } }),
+      status: {
+        set: (look) => {
+          shown.push(look);
+          return Promise.resolve();
+        },
+      },
+      desk: createMemoryDesk(),
+      state,
+      engine: {
+        run(turn) {
+          turns.push(turn);
+          stop.abort();
+          return Promise.resolve({ sessionId: 'session-1', ok: true, summary: '늦은 답장함' });
+        },
+      },
+      judge: quietJudge,
+    });
+
+    const intake = container.intake();
+    const catchup = container.catchup();
+    await container.listener().start((event) => void intake(event));
+    listener.setConnected(false);
+    await container.heartbeat().beat(); // the ears are down: the time is not moved
+    expect(shown).toEqual([]);
+
+    await catchup?.run(); // what the reconnect hook does
+    listener.setConnected(true);
+    await container.heartbeat().beat();
+    await container.runtime().run(stop.signal);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.prompt).toContain('자리 비운 사이에 보낸 질문');
+    expect(turns[0]?.prompt).toContain('늦게 확인');
+    expect(shown).toHaveLength(1);
+    expect(shown[0]?.text).toMatch(/^근무 중 · \d{2}:\d{2} 확인$/);
   });
 });

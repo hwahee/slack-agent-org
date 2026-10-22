@@ -23,6 +23,7 @@ import { describeError, type Logger } from '../lib/log';
 import type { ConversationMemory, StateStore } from '../state/types';
 import type { TurnControl } from '../tools/types';
 import { messagesPrompt, resumePrompt } from './prompts';
+import type { UsageLedger } from './usage';
 
 export interface RuntimeDeps {
   readonly inbox: Inbox;
@@ -32,6 +33,8 @@ export interface RuntimeDeps {
   readonly log: Logger;
   /** Pause after a failed turn, so a broken engine does not spin. */
   readonly failureBackoffMs?: number;
+  /** Where each turn's cost is tallied. */
+  readonly usage?: Pick<UsageLedger, 'record'>;
 }
 
 interface CurrentTurn {
@@ -43,6 +46,7 @@ export class AgentRuntime implements TurnControl {
   private current: CurrentTurn | null = null;
   /** Paused tasks; the last one paused resumes first, like a stack of interrupted work. */
   private suspended: SuspendedTurn[] = [];
+  private failing = 0;
 
   constructor(private readonly deps: RuntimeDeps) {}
 
@@ -51,6 +55,11 @@ export class AgentRuntime implements TurnControl {
     this.current.yieldNote = note;
     this.deps.log.info('agent pausing its task', { conversation: this.current.conversation, note });
     return true;
+  }
+
+  /** Turns in a row that failed or ended in an error (0 after any turn that went fine). */
+  get failingTurns(): number {
+    return this.failing;
   }
 
   /** Puts back what a previous process left (call before `run`). */
@@ -98,6 +107,8 @@ export class AgentRuntime implements TurnControl {
     try {
       const memory = await state.memoryOf(conversation);
       const result = await engine.run({ prompt: prompt(memory) });
+      void this.deps.usage?.record('turn', result.costUsd);
+      this.failing = result.ok ? 0 : this.failing + 1;
       if (result.summary.trim()) {
         await state.addNote(conversation, {
           at: new Date().toISOString(),
@@ -120,6 +131,7 @@ export class AgentRuntime implements TurnControl {
         this.suspended.push({ conversation, note: current.yieldNote });
       }
     } catch (error) {
+      this.failing += 1;
       log.error('turn failed', { conversation, error: describeError(error) });
       await Bun.sleep(this.deps.failureBackoffMs ?? 5_000);
     } finally {

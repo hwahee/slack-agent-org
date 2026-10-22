@@ -6,6 +6,9 @@
  *     its turns. Engines keep nothing between turns; this is what a turn is
  *     told, as text, instead of carrying every earlier screen and click.
  *   - The queue: messages not yet handled and turns paused at a safe point.
+ *   - Until when the ears are known to have heard everything — where the next
+ *     catch-up on missed messages starts.
+ *   - Today's model spending (USD), so a daily budget survives restarts.
  */
 import type { QueueSnapshot } from '../inbox/types';
 
@@ -34,12 +37,27 @@ export interface ConversationMemory {
   readonly notes: readonly WorkNote[];
 }
 
+/** Model spending on one local day. */
+export interface DailyUsage {
+  /** `YYYY-MM-DD` in TIME_ZONE. */
+  readonly day: string;
+  /** USD by what spent it (`turn`, `triage`, …). */
+  readonly bySource: Readonly<Record<string, number>>;
+}
+
 export interface StateStore {
   memoryOf(conversation: string): Promise<ConversationMemory>;
+  /** Every conversation remembered so far. */
+  allMemories(): Promise<ReadonlyMap<string, ConversationMemory>>;
   remember(conversation: string, remark: Remark): Promise<void>;
   addNote(conversation: string, note: WorkNote): Promise<void>;
   loadQueue(): Promise<QueueSnapshot>;
   saveQueue(queue: QueueSnapshot): Promise<void>;
+  /** UTC ISO time up to which everything said has been heard (or caught up on); unset at first. */
+  heardUntil(): Promise<string | undefined>;
+  setHeardUntil(at: string): Promise<void>;
+  usage(): Promise<DailyUsage | undefined>;
+  setUsage(usage: DailyUsage): Promise<void>;
 }
 
 export const EMPTY_QUEUE: QueueSnapshot = { pending: [], suspended: [] };

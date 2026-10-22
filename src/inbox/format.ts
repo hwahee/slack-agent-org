@@ -44,15 +44,25 @@ export function formatMessage(message: InboxMessage, options: FormatOptions): st
     options.maxText !== undefined && message.text.length > options.maxText
       ? `${message.text.slice(0, options.maxText)}…`
       : message.text;
-  const header = `[${message.id}] ${where(message)}${thread} · ${message.userName} · ${slackTime(message.ts, options.timeZone)}`;
+  const late = message.missed ? ' · 늦게 확인' : '';
+  const header = `[${message.id}] ${where(message)}${thread} · ${message.userName} · ${slackTime(message.ts, options.timeZone)}${late}`;
   const body = text
     .split('\n')
     .map((line) => `  ${line}`)
     .join('\n');
-  if (!message.triage) return `${header}\n${body}`;
-  return (
-    `${header} · 나를 부르지 않은 채널 글\n${body}\n` +
-    `  ↳ 답할 만하다고 판단한 이유: ${message.triage.reason}\n` +
-    '  ↳ 답하기 전에 화면에서 최신 대화를 확인하세요. 그사이 다른 사람이 답했거나 끝난 이야기면 답하지 않고 넘어갑니다.'
-  );
+  const notes = [
+    ...(message.missed
+      ? [
+          '  ↳ 꺼져 있었거나 연결이 끊긴 동안 온 글이라 지금 처음 봅니다. 시간이 지났으니 아직 답이 필요한지 화면에서 확인하고, 답한다면 늦은 것을 짧게 알리세요.',
+        ]
+      : []),
+    ...(message.triage
+      ? [
+          `  ↳ 답할 만하다고 판단한 이유: ${message.triage.reason}`,
+          '  ↳ 답하기 전에 화면에서 최신 대화를 확인하세요. 그사이 다른 사람이 답했거나 끝난 이야기면 답하지 않고 넘어갑니다.',
+        ]
+      : []),
+  ];
+  const tag = message.triage ? ' · 나를 부르지 않은 채널 글' : '';
+  return [`${header}${tag}`, body, ...notes].join('\n');
 }
