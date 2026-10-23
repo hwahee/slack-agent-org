@@ -20,6 +20,7 @@
  * until a human speaks again. It holds for overheard messages too.
  */
 import type { SlackMessageEvent } from '../slack/types';
+import type { ConversationMemory } from '../state/types';
 
 export type Verdict =
   | { readonly deliver: true }
@@ -78,6 +79,18 @@ export class Addressing {
 
   constructor(private readonly options: AddressingOptions) {
     this.humans = new Set(options.humanUserIds);
+  }
+
+  /**
+   * After a restart: the threads the agent had posted in, from its remembered
+   * own messages — so replies in them still count as addressed to it.
+   */
+  recall(memories: ReadonlyMap<string, ConversationMemory>): void {
+    for (const [channel, memory] of memories) {
+      for (const remark of memory.remarks) {
+        if (remark.own) this.threadsJoined.add(`${channel}:${remark.threadTs ?? remark.ts}`);
+      }
+    }
   }
 
   /** Looks at every message the ears hear, in order, and says whether it reaches the agent. */

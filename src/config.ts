@@ -51,6 +51,31 @@ const configValidator = toValidator(
      */
     slackStatus: s._default(s.enum(['on', 'off']), 'on'),
 
+    /**
+     * Minutes between polls. Every poll runs plain code first — the status
+     * heartbeat and the catch-up on missed messages call no model at all.
+     */
+    pollMinutes: s._default(s.int().check(s.gte(1), s.lte(1440)), 10),
+    /**
+     * The "working" status, stamped on every poll while the agent is fine:
+     * `{time}` → 15:30, `{date}` → 10/22 (TIME_ZONE). A time that stops moving
+     * means the agent stopped being fine.
+     */
+    heartbeatText: s._default(
+      s.string().check(s.minLength(1), s.maxLength(80)),
+      '근무 중 · {time} 확인',
+    ),
+    /** Looks for messages the ears missed (downtime, a dropped connection) on every poll. */
+    catchup: s._default(s.enum(['on', 'off']), 'on'),
+    /** Missed messages older than this are only remembered, never answered. */
+    catchupMaxHours: s._default(s.int().check(s.gte(1), s.lte(168)), 24),
+    /**
+     * Daily cap (USD) on model use the agent starts on its own (poll tasks).
+     * Unset = no cap. Answering people and channel triage are never capped;
+     * their spending is tallied and logged against it.
+     */
+    dailyBudgetUsd: s.optional(s.number().check(s.gte(0))),
+
     /** The engine that thinks. Drivers are swapped here, never in code. */
     engineDriver: s._default(s.enum(['claude-cli']), 'claude-cli'),
     claudeBin: s._default(s.string().check(s.minLength(1)), 'claude'),
@@ -125,6 +150,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     triageModel: env.TRIAGE_MODEL,
     triageWaitSeconds: numberOrUndefined(env.TRIAGE_WAIT_SECONDS),
     slackStatus: emptyToUndefined(env.SLACK_STATUS),
+    pollMinutes: numberOrUndefined(env.POLL_MINUTES),
+    heartbeatText: emptyToUndefined(env.HEARTBEAT_TEXT),
+    catchup: emptyToUndefined(env.CATCHUP),
+    catchupMaxHours: numberOrUndefined(env.CATCHUP_MAX_HOURS),
+    dailyBudgetUsd: numberOrUndefined(env.DAILY_BUDGET_USD),
     engineDriver: emptyToUndefined(env.ENGINE_DRIVER),
     claudeBin: emptyToUndefined(env.CLAUDE_BIN),
     claudeModel: emptyToUndefined(env.CLAUDE_MODEL),

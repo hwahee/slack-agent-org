@@ -7,6 +7,7 @@
  *
  * Version 1 kept an engine session per conversation; those sessions are no
  * longer continued, so a version 1 file is read as version 2 without them.
+ * `heardUntil` and `usage` were added to version 2 as optional fields.
  */
 import { mkdir, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -18,6 +19,7 @@ import {
   withNote,
   withRemark,
   type ConversationMemory,
+  type DailyUsage,
   type StateStore,
 } from './types';
 
@@ -34,6 +36,7 @@ const inboxMessage = s.object({
   text: s.string(),
   receivedAt: s.string(),
   triage: s.optional(s.object({ reason: s.string() })),
+  missed: s.optional(s.literal(true)),
 });
 
 const queue = s.object({
@@ -59,6 +62,9 @@ const stateValidator = toValidator(
     version: s.literal(2),
     conversations: s.record(s.string(), memory),
     queue,
+    // Added within version 2: older files simply lack them.
+    heardUntil: s.optional(s.string()),
+    usage: s.optional(s.object({ day: s.string(), bySource: s.record(s.string(), s.number()) })),
   }),
 );
 
@@ -114,6 +120,9 @@ export function createFileStateStore(path: string): StateStore {
     async memoryOf(conversation): Promise<ConversationMemory> {
       return (await read()).conversations[conversation] ?? EMPTY_MEMORY;
     },
+    async allMemories(): Promise<ReadonlyMap<string, ConversationMemory>> {
+      return new Map(Object.entries((await read()).conversations));
+    },
     remember(conversation, remark) {
       return update((current) => {
         current.conversations[conversation] = stored(
@@ -134,6 +143,22 @@ export function createFileStateStore(path: string): StateStore {
     saveQueue(queue) {
       return update((current) => {
         current.queue = { pending: [...queue.pending], suspended: [...queue.suspended] };
+      });
+    },
+    async heardUntil(): Promise<string | undefined> {
+      return (await read()).heardUntil;
+    },
+    setHeardUntil(at) {
+      return update((current) => {
+        current.heardUntil = at;
+      });
+    },
+    async usage(): Promise<DailyUsage | undefined> {
+      return (await read()).usage;
+    },
+    setUsage(usage) {
+      return update((current) => {
+        current.usage = { day: usage.day, bySource: { ...usage.bySource } };
       });
     },
   };

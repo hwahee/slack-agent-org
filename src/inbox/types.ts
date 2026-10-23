@@ -28,6 +28,11 @@ export interface InboxMessage {
    * Such messages wait behind the ones addressed to it.
    */
   readonly triage?: { readonly reason: string };
+  /**
+   * Set when the ears never heard it: it was said while the agent was off or
+   * its connection was down, and a later catch-up (./catchup.ts) found it.
+   */
+  readonly missed?: true;
 }
 
 /** A turn the agent paused itself at a safe point, to be picked up again later. */

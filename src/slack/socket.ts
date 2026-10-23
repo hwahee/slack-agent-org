@@ -71,9 +71,13 @@ export function createSocketListener({
   let stopped = false;
   let delay = reconnectDelayMs;
   let retry: ReturnType<typeof setTimeout> | undefined;
+  /** Greeted by Slack and not closed since. */
+  let live = false;
+  let onMessage: (event: SlackMessageEvent) => void = () => undefined;
+  let onConnected: () => void = () => undefined;
 
   /** Opens one connection; resolves on Slack's `hello`, rejects if it never comes. */
-  async function connect(onMessage: (event: SlackMessageEvent) => void): Promise<void> {
+  async function connect(): Promise<void> {
     const url = await openUrl();
     return new Promise((resolve, reject) => {
       let greeted = false;
@@ -100,8 +104,10 @@ export function createSocketListener({
               });
             }
             greeted = true;
+            live = true;
             delay = reconnectDelayMs;
             resolve();
+            onConnected();
             break;
           case 'disconnect':
             log.info('slack asked to reconnect', { reason: frame.reason });
@@ -120,34 +126,41 @@ export function createSocketListener({
 
       ws.addEventListener('close', (closed) => {
         log.info('slack socket closed', { code: closed.code, reason: closed.reason });
-        if (socket === ws) socket = undefined;
+        if (socket === ws) {
+          socket = undefined;
+          live = false;
+        }
         if (!greeted) reject(new Error(`slack closed the socket before hello (${closed.code})`));
-        if (!stopped) scheduleReconnect(onMessage);
+        if (!stopped) scheduleReconnect();
       });
     });
   }
 
-  function scheduleReconnect(onMessage: (event: SlackMessageEvent) => void): void {
+  function scheduleReconnect(): void {
     if (retry) return;
     log.info('slack socket closed; reconnecting', { inMs: delay });
     retry = setTimeout(() => {
       retry = undefined;
-      connect(onMessage)
+      connect()
         .then(() => log.info('slack socket reconnected'))
         .catch((error: unknown) => {
           log.warn('slack reconnect failed', { error: describeError(error) });
           delay = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS);
-          if (!stopped && !socket) scheduleReconnect(onMessage);
+          if (!stopped && !socket) scheduleReconnect();
         });
     }, delay);
   }
 
   return {
-    async start(onMessage) {
+    async start(handleMessage, handleConnected) {
       stopped = false;
-      await connect(onMessage);
+      onMessage = handleMessage;
+      onConnected = handleConnected ?? (() => undefined);
+      await connect();
       log.info('slack socket connected');
     },
+
+    connected: () => live,
 
     stop() {
       stopped = true;
@@ -155,6 +168,7 @@ export function createSocketListener({
       retry = undefined;
       socket?.close(1000);
       socket = undefined;
+      live = false;
       return Promise.resolve();
     },
   };

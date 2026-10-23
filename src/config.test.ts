@@ -45,6 +45,32 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...minimal, SLACK_STATUS: 'maybe' })).toThrow();
   });
 
+  test('polls every 10 minutes by default, all of it adjustable', () => {
+    expect(loadConfig(minimal)).toMatchObject({
+      pollMinutes: 10,
+      heartbeatText: '근무 중 · {time} 확인',
+      catchup: 'on',
+      catchupMaxHours: 24,
+    });
+    expect(loadConfig(minimal).dailyBudgetUsd).toBeUndefined();
+    expect(
+      loadConfig({
+        ...minimal,
+        POLL_MINUTES: '5',
+        HEARTBEAT_TEXT: '{date} {time} 이상 없음',
+        CATCHUP: 'off',
+        DAILY_BUDGET_USD: '2.5',
+      }),
+    ).toMatchObject({
+      pollMinutes: 5,
+      heartbeatText: '{date} {time} 이상 없음',
+      catchup: 'off',
+      dailyBudgetUsd: 2.5,
+    });
+    expect(() => loadConfig({ ...minimal, POLL_MINUTES: '0' })).toThrow();
+    expect(() => loadConfig({ ...minimal, HEARTBEAT_TEXT: 'x'.repeat(81) })).toThrow();
+  });
+
   test('rejects an unknown time zone', () => {
     expect(loadConfig(minimal).timeZone).toBe('Asia/Seoul');
     expect(() => loadConfig({ ...minimal, TIME_ZONE: 'Mars/Olympus' })).toThrow();

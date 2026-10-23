@@ -7,7 +7,10 @@
  * desk is waiting for a person, and on a graceful shutdown. Not per turn: a
  * status that flips with every message tells the team little.
  *
- * A forced exit, a crash or a power cut leaves whatever was set last.
+ * While working, the heartbeat (./heartbeat.ts) stamps the status with the
+ * time it last found the agent fine ("근무 중 · 15:30 확인", HEARTBEAT_TEXT).
+ * A forced exit, a crash or a power cut leaves whatever was set last — and
+ * a time that stopped moving says so.
  */
 
 import type { StatusLook } from '../slack/types';
@@ -16,7 +19,7 @@ export type AgentStatus = 'working' | 'blocked' | 'restarting' | 'off' | 'offWit
 
 /** Every status the agent can show, in one place. All are set with "don't clear". */
 export const STATUS_LOOKS: Readonly<Record<AgentStatus, StatusLook>> = {
-  /** Started and at the desk — messages get answered. */
+  /** Started and at the desk — messages get answered. Shown stamped (`heartbeatLook`). */
   working: { emoji: ':large_green_circle:', text: '근무 중' },
   /** Running, but the desk lacks a macOS permission — a person has to grant it. */
   blocked: { emoji: ':warning:', text: '화면 권한 필요 · 사람의 확인을 기다리는 중' },
@@ -45,4 +48,22 @@ export function statusLook(status: AgentStatus, leftOver = 0): StatusLook {
   const look = STATUS_LOOKS[status];
   if (status !== 'offWithWork' || leftOver === 0) return look;
   return { ...look, text: `꺼져 있음 · 남은 일 ${leftOver}건은 다음에 켜지면 처리` };
+}
+
+/** `template` with `{time}` → 15:30 and `{date}` → 10/22, as of `at` in `timeZone`. */
+export function stamp(template: string, at: Date, timeZone: string): string {
+  const part = (options: Intl.DateTimeFormatOptions) =>
+    Object.fromEntries(
+      new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', ...options })
+        .formatToParts(at)
+        .map(({ type, value }) => [type, value]),
+    );
+  const { hour, minute } = part({ hour: '2-digit', minute: '2-digit' });
+  const { month, day } = part({ month: 'numeric', day: 'numeric' });
+  return template.replaceAll('{time}', `${hour}:${minute}`).replaceAll('{date}', `${month}/${day}`);
+}
+
+/** The working status, stamped with the moment the agent was last found fine. */
+export function heartbeatLook(template: string, at: Date, timeZone: string): StatusLook {
+  return { emoji: STATUS_LOOKS.working.emoji, text: stamp(template, at, timeZone) };
 }

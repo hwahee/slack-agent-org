@@ -9,9 +9,14 @@
  * address. Shutdown is cooperative like everything else: stop listening, let
  * the turn in progress end, save what is still waiting, set the Slack status,
  * exit. The status is also set as work starts (src/agent/status.ts).
+ *
+ * Every POLL_MINUTES the poller runs plain-code tasks: the catch-up on
+ * messages the ears missed, and the status heartbeat ("근무 중 · 15:30 확인").
+ * The catch-up also runs whenever the Slack connection comes (back) up.
  */
 import { resolve } from 'node:path';
 
+import { Poller, type PollTask } from './agent/poller';
 import { shutdownStatus, statusLook, type AgentStatus } from './agent/status';
 import { loadConfig } from './config';
 import { createContainer } from './container';
@@ -54,14 +59,35 @@ await clearRestart(dataDir);
 
 const runtime = container.runtime();
 runtime.restore(await container.state().loadQueue());
+// Replies in threads the agent posted in before the restart are still for it.
+container.addressing().recall(await container.state().allMemories());
 container.toolServer(); // listening before the first turn
 
 const intake = container.intake();
-await container.listener().start((event) => {
-  intake(event).catch((error: unknown) => {
-    log.error('intake failed', { error: describeError(error) });
-  });
+const catchup = container.catchup();
+await container.listener().start(
+  (event) => {
+    intake(event).catch((error: unknown) => {
+      log.error('intake failed', { error: describeError(error) });
+    });
+  },
+  // Connected (again): look for what was said while nobody was listening.
+  () => void catchup?.run(),
+);
+
+/** Proof of life on the Slack status; null when the status is not ours to set. */
+const heartbeat = statusOn ? container.heartbeat() : null;
+const pollTasks: PollTask[] = [
+  ...(catchup ? [{ name: 'catchup', run: () => catchup.run() }] : []),
+  ...(heartbeat ? [heartbeat] : []),
+];
+const poller = new Poller({
+  tasks: pollTasks,
+  intervalMs: config.pollMinutes * 60_000,
+  usage: container.usage(),
+  log,
 });
+if (pollTasks.length > 0) poller.start();
 
 /**
  * Holds every turn until the desk can see and act. Messages heard meanwhile
@@ -95,13 +121,16 @@ async function untilDeskReady(
 }
 
 const stop = new AbortController();
-const running = untilDeskReady(container.desk(), log, stop.signal, () => setStatus('blocked')).then(
-  async () => {
-    if (stop.signal.aborted) return;
-    await setStatus('working');
-    await runtime.run(stop.signal);
-  },
-);
+const running = untilDeskReady(
+  container.desk(),
+  log,
+  stop.signal,
+  async () => heartbeat?.beat(), // shows "permission needed"
+).then(async () => {
+  if (stop.signal.aborted) return;
+  await heartbeat?.beat(); // "근무 중 · 15:30 확인"
+  await runtime.run(stop.signal);
+});
 log.info('agent ready', {
   agent: config.agentName,
   engine: config.engineDriver,
@@ -130,6 +159,8 @@ async function shutdown(signal: string): Promise<void> {
 
   await container.listener().stop();
   await container.triage()?.stop();
+  await poller.stop();
+  await catchup?.settled(); // what it finds is queued before the queue is saved
   stop.abort();
   await running;
   await container.state().saveQueue(runtime.snapshot());

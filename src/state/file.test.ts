@@ -102,4 +102,39 @@ describe('file state store', () => {
     await Bun.write(path, JSON.stringify({ version: 99 }));
     await expect(createFileStateStore(path).memoryOf('C1')).rejects.toThrow();
   });
+
+  test('keeps where hearing reached and the usage of the day across a restart', async () => {
+    const path = join(dir, 'state.json');
+    const before = createFileStateStore(path);
+    expect(await before.heardUntil()).toBeUndefined();
+    expect(await before.usage()).toBeUndefined();
+    await before.setHeardUntil('2026-10-22T06:30:00.000Z');
+    await before.setUsage({ day: '2026-10-22', bySource: { turn: 0.4 } });
+    await before.remember('D1', remark('1.0', '안녕'));
+
+    const after = createFileStateStore(path);
+    expect(await after.heardUntil()).toBe('2026-10-22T06:30:00.000Z');
+    expect(await after.usage()).toEqual({ day: '2026-10-22', bySource: { turn: 0.4 } });
+    expect([...(await after.allMemories()).keys()]).toEqual(['D1']);
+  });
+
+  test('reads a version 2 file written before those fields existed', async () => {
+    const path = join(dir, 'state.json');
+    await Bun.write(
+      path,
+      JSON.stringify({ version: 2, conversations: {}, queue: { pending: [], suspended: [] } }),
+    );
+    const store = createFileStateStore(path);
+    expect(await store.heardUntil()).toBeUndefined();
+    expect(await store.loadQueue()).toEqual({ pending: [], suspended: [] });
+  });
+
+  test('keeps the late mark on a waiting message', async () => {
+    const path = join(dir, 'state.json');
+    await createFileStateStore(path).saveQueue({
+      pending: [{ ...inboxMessage('1.0'), missed: true }],
+      suspended: [],
+    });
+    expect((await createFileStateStore(path).loadQueue()).pending[0]?.missed).toBe(true);
+  });
 });

@@ -49,13 +49,17 @@ function fakeSlack(): FakeSlack {
   return state;
 }
 
-function listen(fake: FakeSlack, onMessage: (event: SlackMessageEvent) => void) {
+function listen(
+  fake: FakeSlack,
+  onMessage: (event: SlackMessageEvent) => void,
+  onConnected?: () => void,
+) {
   listener = createSocketListener({
     openUrl: () => Promise.resolve(`ws://127.0.0.1:${fake.server.port}`),
     log: silentLogger,
     reconnectDelayMs: 10,
   });
-  return listener.start(onMessage);
+  return listener.start(onMessage, onConnected);
 }
 
 async function until(condition: () => boolean): Promise<void> {
@@ -114,6 +118,25 @@ describe('socket listener', () => {
     await listen(fake, () => undefined);
     fake.sockets[0]?.close(1011);
     await until(() => fake.connections === 2);
+  });
+
+  test('says whether it is connected, and announces every (re)connection', async () => {
+    const fake = fakeSlack();
+    let connections = 0;
+    await listen(
+      fake,
+      () => undefined,
+      () => (connections += 1),
+    );
+    expect(listener?.connected()).toBe(true);
+    expect(connections).toBe(1);
+
+    fake.sockets[0]?.close(1011);
+    await until(() => connections === 2);
+    expect(listener?.connected()).toBe(true);
+
+    await listener?.stop();
+    expect(listener?.connected()).toBe(false);
   });
 
   test('warns when another process shares the app token', async () => {

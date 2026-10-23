@@ -10,22 +10,26 @@
 import { join, resolve } from 'node:path';
 
 import { systemPrompt, triageSystemPrompt } from './agent/prompts';
+import { Heartbeat } from './agent/heartbeat';
 import { AgentRuntime } from './agent/runtime';
 import { Triage } from './agent/triage';
+import { UsageLedger } from './agent/usage';
 import type { Config } from './config';
 import { createMacDesk } from './desk/macos';
 import type { Desk } from './desk/types';
 import { createClaudeCliEngine, createClaudeCliJudge } from './engine/claude-cli';
 import type { Engine, Judge } from './engine/types';
 import { Addressing } from './inbox/addressing';
+import { Catchup } from './inbox/catchup';
 import { Inbox } from './inbox/inbox';
-import { createIntake } from './inbox/intake';
+import { createIntake, type Intake } from './inbox/intake';
 import { createLogger, type Logger } from './lib/log';
 import { createWebDirectory } from './slack/directory';
+import { createWebHistory } from './slack/history';
 import { allowedWriteScopes } from './slack/scopes';
 import { createSocketListener, openSocketUrl } from './slack/socket';
 import { createWebStatus } from './slack/status';
-import type { SlackDirectory, SlackListener, SlackStatus } from './slack/types';
+import type { SlackDirectory, SlackHistory, SlackListener, SlackStatus } from './slack/types';
 import { createFileStateStore } from './state/file';
 import type { StateStore } from './state/types';
 import { TOOL_SERVER_NAME, TOOLS } from './tools/catalog';
@@ -35,10 +39,14 @@ export interface Container {
   readonly config: Config;
   readonly log: Logger;
   inbox(): Inbox;
+  /** Who a message is for, and the agent ↔ agent loop guard. */
+  addressing(): Addressing;
   /** Ears → inbox. */
-  intake(): ReturnType<typeof createIntake>;
+  intake(): Intake;
   listener(): SlackListener;
   directory(): SlackDirectory;
+  /** Read-only history, for the catch-up. */
+  history(): SlackHistory;
   /** The agent's own Slack status — the one API write (src/slack/status.ts). */
   status(): SlackStatus;
   desk(): Desk;
@@ -51,18 +59,28 @@ export interface Container {
   /** Null when channel triage is off. */
   triage(): Triage | null;
   runtime(): AgentRuntime;
+  /** Daily model spending and the budget for agent-started work. */
+  usage(): UsageLedger;
+  /** Missed-message catch-up; null when CATCHUP is off. */
+  catchup(): Catchup | null;
+  /** The status heartbeat (call only while SLACK_STATUS works — see index.ts). */
+  heartbeat(): Heartbeat;
 }
 
 export interface ContainerOverrides {
   log?: Logger;
   listener?: SlackListener;
   directory?: SlackDirectory;
+  history?: SlackHistory;
   status?: SlackStatus;
   desk?: Desk;
   state?: StateStore;
   engine?: Engine;
   judge?: Judge;
 }
+
+/** This many failed turns in a row and the heartbeat stops calling the agent fine. */
+const FAILING_TURNS_UNWELL = 3;
 
 /** Memoizes a factory — the singleton primitive used for every service. */
 function lazy<T>(factory: () => T): () => T {
@@ -94,15 +112,20 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
         allowedWriteScopes: allowedWriteScopes(config.slackStatus),
       }),
   );
+  const history = lazy(() => overrides.history ?? createWebHistory(config.slackReadToken));
   const status = lazy(() => overrides.status ?? createWebStatus(config.slackReadToken));
-  const intake = lazy(() => {
-    const overheard = triage();
-    return createIntake({
-      addressing: new Addressing({
+  const addressing = lazy(
+    () =>
+      new Addressing({
         agentUserId: config.agentSlackUserId,
         humanUserIds: config.humanSlackUserIds,
         maxAgentExchanges: config.maxAgentExchanges,
       }),
+  );
+  const intake = lazy(() => {
+    const overheard = triage();
+    return createIntake({
+      addressing: addressing(),
       directory: directory(),
       inbox: inbox(),
       state: state(),
@@ -180,8 +203,47 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
           timeZone: config.timeZone,
           waitMs: config.triageWaitSeconds * 1000,
           log,
+          usage: usage(),
         })
       : null,
+  );
+
+  const usage = lazy(
+    () =>
+      new UsageLedger({
+        state: state(),
+        timeZone: config.timeZone,
+        ...(config.dailyBudgetUsd !== undefined && { dailyBudgetUsd: config.dailyBudgetUsd }),
+        log,
+      }),
+  );
+
+  const catchup = lazy(() =>
+    config.catchup === 'on'
+      ? new Catchup({
+          history: history(),
+          state: state(),
+          intake: intake(),
+          maxAgeMs: config.catchupMaxHours * 60 * 60 * 1000,
+          log,
+        })
+      : null,
+  );
+
+  const heartbeat = lazy(
+    () =>
+      new Heartbeat({
+        status: status(),
+        deskProblem: () => desk().problem(),
+        otherProblem: () => {
+          if (!listener().connected()) return 'slack connection down';
+          const failing = runtime().failingTurns;
+          return failing >= FAILING_TURNS_UNWELL ? `last ${failing} turns failed` : undefined;
+        },
+        template: config.heartbeatText,
+        timeZone: config.timeZone,
+        log,
+      }),
   );
 
   const runtime = lazy(
@@ -192,6 +254,7 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
         state: state(),
         timeZone: config.timeZone,
         log,
+        usage: usage(),
       }),
   );
 
@@ -199,9 +262,11 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
     config,
     log,
     inbox,
+    addressing,
     intake,
     listener,
     directory,
+    history,
     status,
     desk,
     state,
@@ -210,5 +275,8 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
     judge,
     triage,
     runtime,
+    usage,
+    catchup,
+    heartbeat,
   };
 }
