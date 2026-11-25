@@ -14,6 +14,8 @@
  * turn in progress. Glances run one at a time. When in doubt — an unreadable
  * answer, a failed call — the agent stays quiet.
  */
+import type { DiagEvents } from '../diag/events';
+import { noopDiagnostics, type Diagnostics } from '../diag/types';
 import type { Judge } from '../engine/types';
 import type { Inbox } from '../inbox/inbox';
 import type { InboxMessage } from '../inbox/types';
@@ -35,6 +37,8 @@ export interface TriageDeps {
   readonly log: Logger;
   /** Where each glance's cost is tallied. */
   readonly usage?: Pick<UsageLedger, 'record'>;
+  /** Each glance's outcome, without the judge's words (docs/diagnostics.md). */
+  readonly diag?: Diagnostics;
 }
 
 export interface Decision {
@@ -138,6 +142,17 @@ export class Triage {
     if (this.stopped) return;
     const { judge, inbox, state, timeZone, log } = this.deps;
     const started = Date.now();
+    const decided = (
+      outcome: DiagEvents['triage.decided']['outcome'],
+      ids: readonly string[] = [],
+    ) =>
+      (this.deps.diag ?? noopDiagnostics).record('triage.decided', {
+        conversation,
+        judged: messages.map((m) => m.id),
+        outcome,
+        ids: [...ids],
+        ms: Date.now() - started,
+      });
     try {
       const memory = await state.memoryOf(conversation);
       const candidates = messages.map((message) => ({
@@ -161,10 +176,12 @@ export class Triage {
           ...fields,
           answer: answer.text.slice(0, 300),
         });
+        decided('unreadable');
         return;
       }
       if (!decision.respond) {
         log.info('triage: staying quiet', { ...fields, reason: decision.reason });
+        decided('quiet');
         return;
       }
       for (const message of messages) {
@@ -173,8 +190,10 @@ export class Triage {
         }
       }
       log.info('triage: will answer', { ...fields, ids: decision.ids, reason: decision.reason });
+      decided('answer', decision.ids);
     } catch (error) {
       log.error('triage failed; staying quiet', { conversation, error: describeError(error) });
+      decided('failed');
     }
   }
 }

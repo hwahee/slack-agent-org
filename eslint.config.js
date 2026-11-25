@@ -18,6 +18,9 @@ import prettierConfig from 'eslint-config-prettier';
  *    through the validation facade.
  * 5. Interruption is cooperative only. Nothing calls `.interrupt()` on an agent
  *    run; the agent pauses itself at a safe point (inbox_yield).
+ * 6. Diagnostics observe only: `src/diag` writes down what it is told and
+ *    reaches nothing else in the agent (only `src/lib` and the validation
+ *    facade). The rest of the agent depends on it, never the other way round.
  */
 
 const restrictedImports = [
@@ -86,8 +89,26 @@ export default tseslint.config(
   // rule's options wholesale, so overlapping blocks would drop each other.
   {
     files: ['src/**/*.ts', 'scripts/**/*.ts'],
-    ignores: ['src/slack/**', 'src/tools/**', 'src/validation/**'],
+    ignores: ['src/slack/**', 'src/tools/**', 'src/validation/**', 'src/diag/**'],
     rules: { 'no-restricted-imports': importsExcept() },
+  },
+  {
+    files: ['src/diag/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            ...importsExcept()[1].patterns,
+            {
+              group: ['../*', '!../lib', '!../lib/*', '!../validation'],
+              message:
+                'Diagnostics observe only: src/diag may use src/lib and the validation facade, nothing else in the agent.',
+            },
+          ],
+        },
+      ],
+    },
   },
   {
     files: ['src/slack/**/*.ts'],

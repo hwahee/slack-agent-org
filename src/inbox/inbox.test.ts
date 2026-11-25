@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
+import { createMemoryDiagnostics } from '../diag/memory';
 import { silentLogger } from '../lib/log';
 import { createMemoryDirectory } from '../slack/memory';
 import { createMemoryStateStore } from '../state/memory';
@@ -169,5 +170,29 @@ describe('intake', () => {
 
     expect(considered).toEqual(['team:누구 배포 아는 분?']);
     expect(inbox.size).toBe(0);
+  });
+});
+
+describe('Inbox diagnostics', () => {
+  test('what is taken, by whom, and how long it waited', () => {
+    const diag = createMemoryDiagnostics();
+    const inbox = new Inbox(diag);
+    const receivedAt = new Date(Date.now() - 2_000).toISOString();
+    inbox.push({ ...inboxMessage('1', 'D1'), receivedAt });
+    inbox.push({ ...inboxMessage('1', 'D2'), receivedAt });
+
+    expect(diag.snapshot().sections.inbox).toMatchObject({ pending: 2, unseen: 2 });
+    expect(diag.snapshot().sections.inbox?.oldestWaitingMs).toBeGreaterThanOrEqual(2_000);
+
+    inbox.takeNextConversation();
+    inbox.take(['D2:1']);
+    inbox.take(['nothing-here']); // nothing taken, nothing recorded
+
+    expect(diag.of('inbox.taken')).toMatchObject([
+      { by: 'turn-start', messages: [{ id: 'D1:1' }] },
+      { by: 'inbox_take', messages: [{ id: 'D2:1' }] },
+    ]);
+    expect(diag.of('inbox.taken')[0]?.messages[0]?.waitedMs).toBeGreaterThanOrEqual(2_000);
+    expect(diag.snapshot().sections.inbox).toMatchObject({ pending: 0, oldestWaitingMs: null });
   });
 });

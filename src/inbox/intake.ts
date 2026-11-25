@@ -14,6 +14,8 @@
  * channel — so a turn can be told what was said before, the way a person
  * scrolls up. Only redeliveries and Slack's own bookkeeping are skipped.
  */
+import type { DiagEvents } from '../diag/events';
+import { noopDiagnostics, type Diagnostics } from '../diag/types';
 import { describeError, type Logger } from '../lib/log';
 import type { SlackDirectory, SlackMessageEvent } from '../slack/types';
 import type { StateStore } from '../state/types';
@@ -29,6 +31,8 @@ export interface IntakeDeps {
   /** Where overheard channel messages go for a glance; absent = they are only remembered. */
   readonly triage?: { consider(message: InboxMessage): void };
   readonly log: Logger;
+  /** Every message seen, its path and what became of it (docs/diagnostics.md). */
+  readonly diag?: Diagnostics;
 }
 
 /** Said by someone in the conversation (the agent too), as opposed to a redelivery or bookkeeping. */
@@ -55,6 +59,7 @@ export function createIntake({
   state,
   triage,
   log,
+  diag = noopDiagnostics,
 }: IntakeDeps): Intake {
   async function remember(event: SlackMessageEvent, own: boolean): Promise<void> {
     if (!event.user) return;
@@ -72,13 +77,31 @@ export function createIntake({
   }
 
   return async function intake(event: SlackMessageEvent, origin: IntakeOrigin = {}): Promise<void> {
+    const heardAt = new Date();
     const verdict = addressing.observe(event);
+    const observed = (outcome: DiagEvents['message.observed']['outcome']) =>
+      diag.record('message.observed', {
+        id: `${event.channel}:${event.ts}`,
+        path: origin.missed || origin.rememberOnly ? 'catchup' : 'socket',
+        channel: event.channel,
+        ts: event.ts,
+        ...(event.user !== undefined && { user: event.user }),
+        receivedAt: heardAt.toISOString(),
+        delayMs: Math.round(heardAt.getTime() - Number(event.ts) * 1000),
+        deliver: verdict.deliver,
+        ...(!verdict.deliver && { reason: verdict.reason }),
+        outcome,
+      });
     if (wasSaid(verdict)) {
       await remember(event, !verdict.deliver && verdict.reason === 'self');
     }
-    if (origin.rememberOnly) return;
+    if (origin.rememberOnly) {
+      observed('remember-only');
+      return;
+    }
     const overheard = !verdict.deliver && verdict.reason === 'overheard' && triage !== undefined;
     if (!verdict.deliver && !overheard) {
+      observed('not-delivered');
       log.debug('message not delivered', {
         channel: event.channel,
         ts: event.ts,
@@ -107,11 +130,13 @@ export function createIntake({
       ...(origin.missed && { missed: true as const }),
     };
     if (overheard) {
+      observed('overheard');
       triage.consider(message);
       log.debug('message overheard', { id: message.id, from: userName, channel: channelName });
       return;
     }
     inbox.push(message);
+    observed('queued');
     log.info('message received', {
       id: message.id,
       from: userName,

@@ -13,6 +13,10 @@
  * Every POLL_MINUTES the poller runs plain-code tasks: the catch-up on
  * messages the ears missed, and the status heartbeat ("근무 중 · 15:30 확인").
  * The catch-up also runs whenever the Slack connection comes (back) up.
+ *
+ * Diagnostics (DIAG, docs/diagnostics.md) start first and stop last: they
+ * write down boot, shutdown and everything in between for an observer outside
+ * the process, and change nothing about how the agent runs.
  */
 import { resolve } from 'node:path';
 
@@ -20,6 +24,7 @@ import { Poller, type PollTask } from './agent/poller';
 import { shutdownStatus, statusLook, type AgentStatus } from './agent/status';
 import { loadConfig } from './config';
 import { createContainer } from './container';
+import type { Diagnostics } from './diag/types';
 import { describeError, type Logger } from './lib/log';
 import type { Desk } from './desk/types';
 import { clearRestart, restartRequested } from './ops/restart';
@@ -31,6 +36,22 @@ process.env.TZ = 'UTC';
 const config = loadConfig();
 const container = createContainer(config);
 const { log } = container;
+
+const diag = container.diag();
+diag.start();
+diag.record('process.booted', {
+  pid: process.pid,
+  bunVersion: Bun.version,
+  config: {
+    pollMinutes: config.pollMinutes,
+    catchup: config.catchup,
+    catchupMaxHours: config.catchupMaxHours,
+    slackStatus: config.slackStatus,
+    channelTriage: config.channelTriage,
+    diagSnapshotSec: config.diagSnapshotSec,
+    diagRetentionDays: config.diagRetentionDays,
+  },
+});
 
 const scopes = await container.directory().assertReadOnly();
 const statusOn = config.slackStatus === 'on' && scopes.includes(STATUS_SCOPE);
@@ -72,13 +93,13 @@ await container.listener().start(
     });
   },
   // Connected (again): look for what was said while nobody was listening.
-  () => void catchup?.run(),
+  () => void catchup?.run('connected'),
 );
 
 /** Proof of life on the Slack status; null when the status is not ours to set. */
 const heartbeat = statusOn ? container.heartbeat() : null;
 const pollTasks: PollTask[] = [
-  ...(catchup ? [{ name: 'catchup', run: () => catchup.run() }] : []),
+  ...(catchup ? [{ name: 'catchup', run: () => catchup.run('poll') }] : []),
   ...(heartbeat ? [heartbeat] : []),
 ];
 const poller = new Poller({
@@ -86,6 +107,7 @@ const poller = new Poller({
   intervalMs: config.pollMinutes * 60_000,
   usage: container.usage(),
   log,
+  diag,
 });
 if (pollTasks.length > 0) poller.start();
 
@@ -99,13 +121,18 @@ async function untilDeskReady(
   logger: Logger,
   signal: AbortSignal,
   onBlocked: () => Promise<void>,
+  diagnostics: Diagnostics,
 ): Promise<void> {
   let told = false;
   for (;;) {
     const problem = await desk.problem();
-    if (!problem) return;
+    if (!problem) {
+      diagnostics.record('desk.state', { ready: true });
+      return;
+    }
     if (!told) {
       told = true;
+      diagnostics.record('desk.state', { ready: false, problem });
       await onBlocked();
     }
     logger.error('desk not ready; holding turns until a person fixes it', {
@@ -126,6 +153,7 @@ const running = untilDeskReady(
   log,
   stop.signal,
   async () => heartbeat?.beat(), // shows "permission needed"
+  diag,
 ).then(async () => {
   if (stop.signal.aborted) return;
   await heartbeat?.beat(); // "근무 중 · 15:30 확인"
@@ -152,10 +180,12 @@ async function shutdown(signal: string): Promise<void> {
   if (shutdownStartedAt !== undefined) {
     if (Date.now() - shutdownStartedAt < 1_000) return;
     log.warn('forced shutdown', { signal });
+    diag.record('process.shutdown', { phase: 'forced', signal });
     process.exit(1);
   }
   shutdownStartedAt = Date.now();
   log.info('shutdown initiated; waiting for the current turn to end', { signal });
+  diag.record('process.shutdown', { phase: 'started', signal });
 
   await container.listener().stop();
   await container.triage()?.stop();
@@ -172,6 +202,8 @@ async function shutdown(signal: string): Promise<void> {
   await container.toolServer().stop();
 
   log.info('shutdown complete');
+  diag.record('process.shutdown', { phase: 'completed', signal });
+  await diag.stop();
   process.exit(0);
 }
 
