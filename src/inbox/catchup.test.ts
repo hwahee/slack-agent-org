@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { messagesPrompt } from '../agent/prompts';
+import { createMemoryDiagnostics } from '../diag/memory';
 import { silentLogger } from '../lib/log';
 import { createMemoryDirectory, createMemoryHistory } from '../slack/memory';
 import type { SlackHistory } from '../slack/types';
@@ -219,5 +220,69 @@ describe('Catchup', () => {
     await second;
     await settled;
     expect(calls).toBe(2);
+  });
+});
+
+describe('Catchup diagnostics', () => {
+  test('a run is recorded with what started it and what it found', async () => {
+    const diag = createMemoryDiagnostics();
+    const { history, state, intake } = await setup({ heardUntil: HEARD_UNTIL });
+    history.post({
+      channel: 'D1',
+      channelType: 'im',
+      user: HUMAN,
+      text: '보고서 언제 돼요?',
+      ts: ts('2026-10-22T06:00:00Z'),
+    });
+    const catchup = new Catchup({
+      history,
+      state,
+      intake,
+      maxAgeMs: 24 * 60 * 60 * 1000,
+      log: silentLogger,
+      now: () => NOW,
+      diag,
+    });
+
+    await catchup.run('poll');
+
+    expect(diag.of('catchup.ran')).toMatchObject([
+      { trigger: 'poll', firstRun: false, since: HEARD_UNTIL, found: 1, answered: 1 },
+    ]);
+    expect(diag.snapshot().sections.catchup).toMatchObject({ lastTrigger: 'poll', lastFound: 1 });
+  });
+
+  test('a run queued behind another keeps the trigger of the call that queued it', async () => {
+    const diag = createMemoryDiagnostics();
+    const { history, state, intake } = await setup({ heardUntil: HEARD_UNTIL });
+    const catchup = new Catchup({
+      history,
+      state,
+      intake,
+      maxAgeMs: 24 * 60 * 60 * 1000,
+      log: silentLogger,
+      now: () => NOW,
+      diag,
+    });
+
+    await Promise.all([catchup.run('poll'), catchup.run('connected'), catchup.run('poll')]);
+
+    expect(diag.of('catchup.ran').map((r) => r.trigger)).toEqual(['poll', 'connected']);
+  });
+
+  test('the first run is marked as such', async () => {
+    const diag = createMemoryDiagnostics();
+    const { history, state, intake } = await setup();
+    const catchup = new Catchup({
+      history,
+      state,
+      intake,
+      maxAgeMs: 24 * 60 * 60 * 1000,
+      log: silentLogger,
+      now: () => NOW,
+      diag,
+    });
+    await catchup.run('connected');
+    expect(diag.of('catchup.ran')).toMatchObject([{ trigger: 'connected', firstRun: true }]);
   });
 });

@@ -11,6 +11,7 @@
  * chose to answer (`triage`), the way a person answers what was asked of them
  * before chiming in elsewhere.
  */
+import { noopDiagnostics, type Diagnostics } from '../diag/types';
 import type { InboxMessage } from './types';
 
 export interface ConversationBatch {
@@ -23,6 +24,21 @@ export class Inbox {
   /** Messages that arrived since the agent last looked. */
   private unseen = 0;
   private readonly waiters = new Set<() => void>();
+
+  /** `diag` writes down what is taken and how long it waited (docs/diagnostics.md). */
+  constructor(private readonly diag: Diagnostics = noopDiagnostics) {
+    diag.section('inbox', () => {
+      const oldest = this.pending.reduce(
+        (min, m) => Math.min(min, Date.parse(m.receivedAt)),
+        Number.POSITIVE_INFINITY,
+      );
+      return {
+        pending: this.pending.length,
+        unseen: this.unseen,
+        oldestWaitingMs: Number.isFinite(oldest) ? Date.now() - oldest : null,
+      };
+    });
+  }
 
   push(message: InboxMessage): void {
     if (this.pending.some((m) => m.id === message.id)) return;
@@ -49,10 +65,21 @@ export class Inbox {
 
   /** Removes the given messages (the agent is handling them now) and returns those found. */
   take(ids: readonly string[]): InboxMessage[] {
+    return this.takeFor(ids, 'inbox_take');
+  }
+
+  private takeFor(ids: readonly string[], by: 'turn-start' | 'inbox_take'): InboxMessage[] {
     const wanted = new Set(ids);
     const taken = this.pending.filter((m) => wanted.has(m.id));
     this.pending = this.pending.filter((m) => !wanted.has(m.id));
     this.unseen = Math.min(this.unseen, this.pending.length);
+    if (taken.length > 0) {
+      const now = Date.now();
+      this.diag.record('inbox.taken', {
+        by,
+        messages: taken.map((m) => ({ id: m.id, waitedMs: now - Date.parse(m.receivedAt) })),
+      });
+    }
     return taken;
   }
 
@@ -64,7 +91,7 @@ export class Inbox {
     const first = this.pending.find((m) => m.triage === undefined) ?? this.pending[0];
     if (!first) return null;
     const ids = this.pending.filter((m) => m.conversation === first.conversation).map((m) => m.id);
-    return { conversation: first.conversation, messages: this.take(ids) };
+    return { conversation: first.conversation, messages: this.takeFor(ids, 'turn-start') };
   }
 
   /** Resolves once something is waiting (at once if something already is), or on abort. */

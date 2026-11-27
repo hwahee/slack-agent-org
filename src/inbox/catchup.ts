@@ -21,6 +21,8 @@
  * during the last week. A thread it never saw before the gap, with an old
  * root, stays out of reach.
  */
+import type { DiagEvents } from '../diag/events';
+import { noopDiagnostics, type Diagnostics } from '../diag/types';
 import { describeError, type Logger } from '../lib/log';
 import type { SlackConversation, SlackHistory, SlackMessageEvent } from '../slack/types';
 import type { ConversationMemory, StateStore } from '../state/types';
@@ -34,7 +36,12 @@ export interface CatchupDeps {
   readonly maxAgeMs: number;
   readonly log: Logger;
   readonly now?: () => Date;
+  /** Each run, what started it and what it found (docs/diagnostics.md). Observes only. */
+  readonly diag?: Diagnostics;
 }
+
+/** What asked for a run — only written down, never changes the run. */
+export type CatchupTrigger = DiagEvents['catchup.ran']['trigger'];
 
 /** How far before `heardUntil` each run looks, for events that were in flight. */
 const OVERLAP_MS = 60_000;
@@ -50,24 +57,43 @@ const byTs = (a: { ts: string }, b: { ts: string }) => Number(a.ts) - Number(b.t
 export class Catchup {
   private current: Promise<void> | undefined;
   private queued: Promise<void> | undefined;
+  private readonly diag: Diagnostics;
+  private last: {
+    at: Date;
+    trigger: CatchupTrigger;
+    since?: string;
+    found?: number;
+    error?: string;
+  } | null = null;
 
-  constructor(private readonly deps: CatchupDeps) {}
+  constructor(private readonly deps: CatchupDeps) {
+    this.diag = deps.diag ?? noopDiagnostics;
+    this.diag.section('catchup', () => ({
+      lastRunAt: this.last?.at.toISOString() ?? null,
+      lastTrigger: this.last?.trigger ?? null,
+      lastSince: this.last?.since ?? null,
+      lastFound: this.last?.found ?? null,
+      lastError: this.last?.error ?? null,
+    }));
+  }
 
   /**
    * Looks for missed messages. Runs one at a time; a call made while one runs
    * waits and runs once more after it (calls during that wait share it).
    * Never rejects: a failure is logged and the next run covers the same gap.
+   * `trigger` is only written down (diagnostics); a queued run keeps the
+   * trigger of the call that queued it.
    */
-  run(): Promise<void> {
+  run(trigger: CatchupTrigger = 'other'): Promise<void> {
     if (this.queued) return this.queued;
     if (this.current) {
       this.queued = this.current.then(() => {
         this.queued = undefined;
-        return this.start();
+        return this.start(trigger);
       });
       return this.queued;
     }
-    return this.start();
+    return this.start(trigger);
   }
 
   /** Resolves once no catch-up is running or waiting (for shutdown). */
@@ -75,22 +101,40 @@ export class Catchup {
     return this.queued ?? this.current ?? Promise.resolve();
   }
 
-  private start(): Promise<void> {
-    const run = this.once().finally(() => {
+  private start(trigger: CatchupTrigger): Promise<void> {
+    const run = this.once(trigger).finally(() => {
       if (this.current === run) this.current = undefined;
     });
     this.current = run;
     return run;
   }
 
-  private async once(): Promise<void> {
+  private async once(trigger: CatchupTrigger): Promise<void> {
     const { state, log } = this.deps;
     const started = (this.deps.now ?? (() => new Date()))();
+    const clock = performance.now();
+    const ran = (fields: Omit<DiagEvents['catchup.ran'], 'trigger' | 'ms' | 'firstRun'>) => {
+      const firstRun = fields.since === undefined && fields.error === undefined;
+      this.diag.record('catchup.ran', {
+        trigger,
+        ms: Math.round(performance.now() - clock),
+        firstRun,
+        ...fields,
+      });
+      this.last = {
+        at: started,
+        trigger,
+        ...(fields.since !== undefined && { since: fields.since }),
+        ...(fields.found !== undefined && { found: fields.found }),
+        ...(fields.error !== undefined && { error: fields.error }),
+      };
+    };
     try {
       const since = await state.heardUntil();
       if (since === undefined) {
         await state.setHeardUntil(started.toISOString());
         log.info('catch-up: nothing heard before; starting from now');
+        ran({});
         return;
       }
       const oldest = toTs(Date.parse(since) - OVERLAP_MS);
@@ -109,10 +153,12 @@ export class Catchup {
       const fields = { since, reads, found: missed.length, answered, rememberedOnly };
       if (missed.length > 0) log.info('catch-up: found missed messages', fields);
       else log.debug('catch-up: nothing missed', fields);
+      ran(fields);
     } catch (error) {
       log.warn('catch-up failed; the next one covers the same gap', {
         error: describeError(error),
       });
+      ran({ error: describeError(error) });
     }
   }
 

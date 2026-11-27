@@ -103,3 +103,20 @@ describe('loadConfig', () => {
     );
   });
 });
+
+describe('diagnostics settings', () => {
+  test('on by default, snapshot every 5 s, a week of records', () => {
+    expect(loadConfig(minimal)).toMatchObject({
+      diag: 'on',
+      diagSnapshotSec: 5,
+      diagRetentionDays: 7,
+    });
+  });
+
+  test('can be turned off; bounds are checked', () => {
+    expect(loadConfig({ ...minimal, DIAG: 'off' }).diag).toBe('off');
+    expect(() => loadConfig({ ...minimal, DIAG: 'maybe' })).toThrow();
+    expect(() => loadConfig({ ...minimal, DIAG_SNAPSHOT_SEC: '0' })).toThrow();
+    expect(() => loadConfig({ ...minimal, DIAG_RETENTION_DAYS: '91' })).toThrow();
+  });
+});

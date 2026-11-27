@@ -12,6 +12,7 @@
  * failing task is logged without stopping the others, and stopping waits for
  * the poll in progress to finish.
  */
+import { noopDiagnostics, type Diagnostics } from '../diag/types';
 import { describeError, type Logger } from '../lib/log';
 import type { UsageLedger } from './usage';
 
@@ -36,18 +37,40 @@ export interface PollerDeps {
   readonly log: Logger;
   readonly now?: () => Date;
   readonly random?: () => number;
+  /** Each poll and how long its tasks took (docs/diagnostics.md). Observes only. */
+  readonly diag?: Diagnostics;
 }
 
 export class Poller {
   private timer: ReturnType<typeof setInterval> | undefined;
   private polling: Promise<void> | undefined;
+  private readonly diag: Diagnostics;
+  /** When the clock last went off (or was started) — for the next expected poll. */
+  private lastTick: number | undefined;
+  private lastStarted: Date | undefined;
+  private lastEnded: Date | undefined;
 
-  constructor(private readonly deps: PollerDeps) {}
+  constructor(private readonly deps: PollerDeps) {
+    this.diag = deps.diag ?? noopDiagnostics;
+    this.diag.section('poll', () => ({
+      everyMs: deps.intervalMs,
+      lastStartedAt: this.lastStarted?.toISOString() ?? null,
+      lastEndedAt: this.lastEnded?.toISOString() ?? null,
+      nextAt:
+        this.timer && this.lastTick !== undefined
+          ? new Date(this.lastTick + deps.intervalMs).toISOString()
+          : null,
+    }));
+  }
 
   /** Polls once now, then every interval. */
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.poll(), this.deps.intervalMs);
+    this.lastTick = Date.now();
+    this.timer = setInterval(() => {
+      this.lastTick = Date.now();
+      void this.poll();
+    }, this.deps.intervalMs);
     void this.poll();
     this.deps.log.info('poller started', {
       everyMinutes: this.deps.intervalMs / 60_000,
@@ -66,6 +89,7 @@ export class Poller {
   poll(): Promise<void> {
     if (this.polling) {
       this.deps.log.debug('previous poll still running; skipping this one');
+      this.diag.record('poll.ran', { skipped: true, ms: 0, tasks: [] });
       return this.polling;
     }
     this.polling = this.runTasks().finally(() => {
@@ -81,12 +105,25 @@ export class Poller {
       random: this.deps.random ?? Math.random,
       usage,
     };
+    const pollStarted = performance.now();
+    this.lastStarted = new Date();
+    const ran: { name: string; ms: number; ok: boolean }[] = [];
     for (const task of tasks) {
+      const taskStarted = performance.now();
+      let ok = true;
       try {
         await task.run(context);
       } catch (error) {
+        ok = false;
         log.error('poll task failed', { task: task.name, error: describeError(error) });
       }
+      ran.push({ name: task.name, ms: Math.round(performance.now() - taskStarted), ok });
     }
+    this.lastEnded = new Date();
+    this.diag.record('poll.ran', {
+      skipped: false,
+      ms: Math.round(performance.now() - pollStarted),
+      tasks: ran,
+    });
   }
 }

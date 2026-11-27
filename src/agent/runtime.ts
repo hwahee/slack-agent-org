@@ -16,6 +16,7 @@
  * chooses (`requestYield`, from the inbox_yield tool). Stopping the runtime
  * (shutdown) likewise waits for the turn in progress to end.
  */
+import { noopDiagnostics, type Diagnostics } from '../diag/types';
 import type { Engine } from '../engine/types';
 import type { Inbox } from '../inbox/inbox';
 import type { QueueSnapshot, SuspendedTurn } from '../inbox/types';
@@ -35,11 +36,20 @@ export interface RuntimeDeps {
   readonly failureBackoffMs?: number;
   /** Where each turn's cost is tallied. */
   readonly usage?: Pick<UsageLedger, 'record'>;
+  /** Turn starts and ends (docs/diagnostics.md). Observes only. */
+  readonly diag?: Diagnostics;
 }
 
 interface CurrentTurn {
   readonly conversation: string;
+  readonly startedAt: Date;
   yieldNote?: string;
+}
+
+/** Why a turn started, for the diagnostics. */
+interface TurnCause {
+  readonly cause: 'messages' | 'resume';
+  readonly messageIds: readonly string[];
 }
 
 export class AgentRuntime implements TurnControl {
@@ -48,7 +58,17 @@ export class AgentRuntime implements TurnControl {
   private suspended: SuspendedTurn[] = [];
   private failing = 0;
 
-  constructor(private readonly deps: RuntimeDeps) {}
+  private readonly diag: Diagnostics;
+
+  constructor(private readonly deps: RuntimeDeps) {
+    this.diag = deps.diag ?? noopDiagnostics;
+    this.diag.section('turn', () => ({
+      conversation: this.current?.conversation ?? null,
+      startedAt: this.current?.startedAt.toISOString() ?? null,
+      suspended: this.suspended.length,
+      failingTurns: this.failing,
+    }));
+  }
 
   requestYield(note: string): boolean {
     if (!this.current) return false;
@@ -80,15 +100,19 @@ export class AgentRuntime implements TurnControl {
       const { timeZone } = this.deps;
       const batch = inbox.takeNextConversation();
       if (batch) {
-        await this.turn(batch.conversation, (memory) =>
-          messagesPrompt(batch.messages, timeZone, memory),
+        await this.turn(
+          batch.conversation,
+          (memory) => messagesPrompt(batch.messages, timeZone, memory),
+          { cause: 'messages', messageIds: batch.messages.map((m) => m.id) },
         );
         continue;
       }
       const paused = this.suspended.pop();
       if (paused) {
-        await this.turn(paused.conversation, (memory) =>
-          resumePrompt(paused.note, timeZone, memory),
+        await this.turn(
+          paused.conversation,
+          (memory) => resumePrompt(paused.note, timeZone, memory),
+          { cause: 'resume', messageIds: [] },
         );
         continue;
       }
@@ -99,11 +123,17 @@ export class AgentRuntime implements TurnControl {
   private async turn(
     conversation: string,
     prompt: (memory: ConversationMemory) => string,
+    why: TurnCause,
   ): Promise<void> {
     const { engine, state, log } = this.deps;
-    const current: CurrentTurn = { conversation };
+    const current: CurrentTurn = { conversation, startedAt: new Date() };
     this.current = current;
     const started = Date.now();
+    this.diag.record('turn.started', {
+      conversation,
+      cause: why.cause,
+      messageIds: [...why.messageIds],
+    });
     try {
       const memory = await state.memoryOf(conversation);
       const result = await engine.run({ prompt: prompt(memory) });
@@ -126,6 +156,13 @@ export class AgentRuntime implements TurnControl {
       };
       if (result.ok) log.info('turn finished', fields);
       else log.warn('turn ended with an error', fields);
+      this.diag.record('turn.ended', {
+        conversation,
+        ms: fields.ms,
+        ok: result.ok,
+        ...(result.toolRoundTrips !== undefined && { toolRoundTrips: result.toolRoundTrips }),
+        ...(result.costUsd !== undefined && { costUsd: result.costUsd }),
+      });
 
       if (current.yieldNote !== undefined) {
         this.suspended.push({ conversation, note: current.yieldNote });
@@ -133,6 +170,12 @@ export class AgentRuntime implements TurnControl {
     } catch (error) {
       this.failing += 1;
       log.error('turn failed', { conversation, error: describeError(error) });
+      this.diag.record('turn.ended', {
+        conversation,
+        ms: Date.now() - started,
+        ok: false,
+        error: describeError(error),
+      });
       await Bun.sleep(this.deps.failureBackoffMs ?? 5_000);
     } finally {
       this.current = null;

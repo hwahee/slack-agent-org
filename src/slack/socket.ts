@@ -17,10 +17,14 @@
  *   hello                → connected
  *   events_api, …        → ack `{ envelope_id }`, then handle the payload
  *   disconnect           → Slack is about to close (refresh, server moving); reconnect
+ *
+ * Diagnostics (`diag`) only watch: every frame, ping, close and reconnect is
+ * written down, and nothing about when or how the listener connects changes.
  */
+import { noopDiagnostics, type Diagnostics } from '../diag/types';
 import { describeError, type Logger } from '../lib/log';
 import { s, toValidator } from '../validation';
-import { parseMessageEnvelope } from './events';
+import { parseMessageEnvelope, readDebugInfo, readEnvelopeMeta } from './events';
 import type { SlackListener, SlackMessageEvent } from './types';
 
 const openResponseValidator = toValidator(
@@ -58,14 +62,36 @@ export interface SocketListenerOptions {
   readonly log: Logger;
   /** First reconnect delay; doubles per failed attempt up to 30 s. */
   readonly reconnectDelayMs?: number;
+  /** Where the connection's life is written down (docs/diagnostics.md). Observes only. */
+  readonly diag?: Diagnostics;
 }
 
 const MAX_RECONNECT_DELAY_MS = 30_000;
+
+/** What the diagnostics know about the connection; none of it steers the listener. */
+interface Observed {
+  /** Connection attempts so far (the current or last one's number). */
+  conn: number;
+  /** Failed attempts in a row since the last hello. */
+  attempt: number;
+  hellos: number;
+  requestedAt: number;
+  connectedAt: Date | undefined;
+  lastFrameAt: Date | undefined;
+  lastFrameType: string | undefined;
+  framesReceived: number;
+  pingsReceived: number;
+  lastPingAt: Date | undefined;
+  lastEnvelopeAt: Date | undefined;
+}
+
+const iso = (date: Date | undefined) => date?.toISOString() ?? null;
 
 export function createSocketListener({
   openUrl,
   log,
   reconnectDelayMs = 1_000,
+  diag = noopDiagnostics,
 }: SocketListenerOptions): SlackListener {
   let socket: WebSocket | undefined;
   let stopped = false;
@@ -76,23 +102,107 @@ export function createSocketListener({
   let onMessage: (event: SlackMessageEvent) => void = () => undefined;
   let onConnected: () => void = () => undefined;
 
+  const seen: Observed = {
+    conn: 0,
+    attempt: 0,
+    hellos: 0,
+    requestedAt: 0,
+    connectedAt: undefined,
+    lastFrameAt: undefined,
+    lastFrameType: undefined,
+    framesReceived: 0,
+    pingsReceived: 0,
+    lastPingAt: undefined,
+    lastEnvelopeAt: undefined,
+  };
+  diag.section('socket', () => ({
+    conn: seen.conn,
+    live,
+    readyState: socket?.readyState ?? null,
+    bufferedAmount: socket?.bufferedAmount ?? null,
+    connectedAt: iso(seen.connectedAt),
+    lastFrameAt: iso(seen.lastFrameAt),
+    lastFrameType: seen.lastFrameType ?? null,
+    framesReceived: seen.framesReceived,
+    pingsReceived: seen.pingsReceived,
+    lastPingAt: iso(seen.lastPingAt),
+    lastEnvelopeAt: iso(seen.lastEnvelopeAt),
+    reconnects: Math.max(0, seen.hellos - 1),
+  }));
+
   /** Opens one connection; resolves on Slack's `hello`, rejects if it never comes. */
   async function connect(): Promise<void> {
-    const url = await openUrl();
+    const conn = (seen.conn += 1);
+    seen.requestedAt = performance.now();
+    let url: string;
+    try {
+      url = await openUrl();
+    } catch (error) {
+      diag.record('socket.url-requested', {
+        conn,
+        ok: false,
+        ms: elapsed(seen.requestedAt),
+        error: describeError(error),
+      });
+      throw error;
+    }
+    // The URL carries a one-time ticket: it is never written down.
+    diag.record('socket.url-requested', { conn, ok: true, ms: elapsed(seen.requestedAt) });
     return new Promise((resolve, reject) => {
       let greeted = false;
       const ws = new WebSocket(url);
       socket = ws;
+      let openedAt: number | undefined;
+
+      ws.addEventListener('open', () => {
+        openedAt = performance.now();
+        diag.record('socket.opened', { conn, msSinceRequest: elapsed(seen.requestedAt) });
+      });
+
+      // Bun reports Slack's WebSocket pings and still answers them by itself;
+      // listening only counts them.
+      ws.addEventListener('ping', () => {
+        const now = new Date();
+        seen.pingsReceived += 1;
+        seen.lastPingAt = now;
+        seen.lastFrameAt = now;
+        seen.lastFrameType = 'ping';
+      });
+
+      ws.addEventListener('error', (event) => {
+        const message = (event as { message?: unknown }).message;
+        diag.record('socket.error', {
+          conn,
+          message: typeof message === 'string' && message ? message : 'websocket error',
+        });
+      });
 
       ws.addEventListener('message', (message) => {
+        const now = new Date();
+        seen.lastFrameAt = now;
+        seen.framesReceived += 1;
+        let raw: unknown;
         let frame;
         try {
-          frame = frameValidator.parse(JSON.parse(String(message.data)));
+          raw = JSON.parse(String(message.data));
+          frame = frameValidator.parse(raw);
         } catch {
+          seen.lastFrameType = 'unreadable';
           log.warn('slack sent an unreadable frame');
+          diag.record('socket.frame-unreadable', { conn, bytes: String(message.data).length });
           return;
         }
+        seen.lastFrameType = frame.type;
         if (frame.envelope_id) ws.send(JSON.stringify({ envelope_id: frame.envelope_id }));
+        if (frame.envelope_id) {
+          seen.lastEnvelopeAt = now;
+          diag.record('socket.envelope', {
+            conn,
+            type: frame.type,
+            envelopeId: frame.envelope_id,
+            ...readEnvelopeMeta(raw),
+          });
+        }
 
         switch (frame.type) {
           case 'hello':
@@ -103,16 +213,32 @@ export function createSocketListener({
                 connections: frame.num_connections,
               });
             }
+            diag.record('socket.hello', {
+              conn,
+              numConnections: frame.num_connections ?? null,
+              helloAfterMs: elapsed(seen.requestedAt),
+              ...readDebugInfo(raw),
+            });
+            seen.hellos += 1;
+            seen.attempt = 0;
+            seen.connectedAt = now;
             greeted = true;
             live = true;
             delay = reconnectDelayMs;
             resolve();
             onConnected();
             break;
-          case 'disconnect':
+          case 'disconnect': {
             log.info('slack asked to reconnect', { reason: frame.reason });
+            const { debugHost } = readDebugInfo(raw);
+            diag.record('socket.disconnect-requested', {
+              conn,
+              ...(frame.reason !== undefined && { reason: frame.reason }),
+              ...(debugHost !== undefined && { debugHost }),
+            });
             ws.close(1000);
             break;
+          }
           case 'events_api': {
             const event = parseMessageEnvelope(frame.payload);
             if (event) onMessage(event);
@@ -126,6 +252,16 @@ export function createSocketListener({
 
       ws.addEventListener('close', (closed) => {
         log.info('slack socket closed', { code: closed.code, reason: closed.reason });
+        diag.record('socket.closed', {
+          conn,
+          code: closed.code,
+          reason: closed.reason,
+          wasClean: closed.wasClean,
+          greeted,
+          livedMs: openedAt === undefined ? 0 : elapsed(openedAt),
+          lastFrameAgoMs:
+            seen.lastFrameAt === undefined ? null : Date.now() - seen.lastFrameAt.getTime(),
+        });
         if (socket === ws) {
           socket = undefined;
           live = false;
@@ -139,6 +275,8 @@ export function createSocketListener({
   function scheduleReconnect(): void {
     if (retry) return;
     log.info('slack socket closed; reconnecting', { inMs: delay });
+    seen.attempt += 1;
+    diag.record('socket.reconnect-scheduled', { delayMs: delay, attempt: seen.attempt });
     retry = setTimeout(() => {
       retry = undefined;
       connect()
@@ -146,6 +284,10 @@ export function createSocketListener({
         .catch((error: unknown) => {
           log.warn('slack reconnect failed', { error: describeError(error) });
           delay = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS);
+          diag.record('socket.reconnect-failed', {
+            error: describeError(error),
+            nextDelayMs: delay,
+          });
           if (!stopped && !socket) scheduleReconnect();
         });
     }, delay);
@@ -172,4 +314,8 @@ export function createSocketListener({
       return Promise.resolve();
     },
   };
+}
+
+function elapsed(since: number): number {
+  return Math.round(performance.now() - since);
 }

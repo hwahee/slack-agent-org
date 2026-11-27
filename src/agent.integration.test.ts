@@ -11,6 +11,9 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 import { loadConfig } from './config';
 import { createContainer, type Container } from './container';
+import { validateRecord } from './diag/events';
+import { createMemoryDiagnostics } from './diag/memory';
+import { noopDiagnostics } from './diag/types';
 import { createMemoryDesk } from './desk/memory';
 import type { Engine, EngineTurn, Judge } from './engine/types';
 import { silentLogger } from './lib/log';
@@ -88,6 +91,7 @@ describe('agent', () => {
       },
     };
 
+    const diag = createMemoryDiagnostics();
     container = createContainer(config(), {
       log: silentLogger,
       listener,
@@ -99,6 +103,7 @@ describe('agent', () => {
       state: createMemoryStateStore(),
       engine,
       judge: quietJudge,
+      diag,
     });
 
     const intake = container.intake();
@@ -148,6 +153,29 @@ describe('agent', () => {
     expect((await container.state().memoryOf('C1')).remarks.map((r) => r.text)).toEqual([
       '점심 뭐 먹지',
     ]);
+
+    // Diagnostics: the DM's path from the ears to the end of its turn, by id.
+    const dm = diag.of('message.observed').find((r) => r.id === 'D1:1.0');
+    expect(dm).toMatchObject({ path: 'socket', deliver: true, outcome: 'queued' });
+    expect(diag.of('message.observed').find((r) => r.id === 'C1:0.5')).toMatchObject({
+      outcome: 'overheard',
+    });
+    expect(diag.of('message.observed').find((r) => r.id === 'D1:2.0')).toMatchObject({
+      deliver: false,
+      reason: 'self',
+      outcome: 'not-delivered',
+    });
+    expect(diag.of('triage.decided')).toMatchObject([{ conversation: 'C1', outcome: 'quiet' }]);
+    expect(diag.of('inbox.taken')).toMatchObject([
+      { by: 'turn-start', messages: [{ id: 'D1:1.0' }] },
+    ]);
+    expect(diag.of('turn.started')).toMatchObject([
+      { conversation: 'D1', cause: 'messages', messageIds: ['D1:1.0'] },
+    ]);
+    expect(diag.of('turn.ended')).toMatchObject([{ conversation: 'D1', ok: true }]);
+    for (const record of diag.records) expect(validateRecord(record)).toEqual({ ok: true });
+    // No message text anywhere in the records.
+    expect(JSON.stringify(diag.records)).not.toContain('미팅');
   });
 
   test('answers an overheard channel question when triage says it should', async () => {
@@ -175,6 +203,7 @@ describe('agent', () => {
       state: createMemoryStateStore(),
       engine,
       judge,
+      diag: createMemoryDiagnostics(),
     });
 
     const intake = container.intake();
@@ -206,6 +235,7 @@ describe('agent', () => {
     const turns: EngineTurn[] = [];
     const now = Date.now();
     await state.setHeardUntil(new Date(now - 10 * 60_000).toISOString());
+    const diag = createMemoryDiagnostics();
     history.post({
       channel: 'D1',
       channelType: 'im',
@@ -234,6 +264,7 @@ describe('agent', () => {
         },
       },
       judge: quietJudge,
+      diag,
     });
 
     const intake = container.intake();
@@ -243,7 +274,7 @@ describe('agent', () => {
     await container.heartbeat().beat(); // the ears are down: the time is not moved
     expect(shown).toEqual([]);
 
-    await catchup?.run(); // what the reconnect hook does
+    await catchup?.run('connected'); // what the reconnect hook does
     listener.setConnected(true);
     await container.heartbeat().beat();
     await container.runtime().run(stop.signal);
@@ -253,5 +284,24 @@ describe('agent', () => {
     expect(turns[0]?.prompt).toContain('늦게 확인');
     expect(shown).toHaveLength(1);
     expect(shown[0]?.text).toMatch(/^근무 중 · \d{2}:\d{2} 확인$/);
+
+    // Diagnostics tell the late DM apart: found by the catch-up, minutes after it was sent.
+    expect(diag.of('catchup.ran')).toMatchObject([
+      { trigger: 'connected', found: 1, answered: 1, firstRun: false },
+    ]);
+    const [late] = diag.of('message.observed');
+    expect(late).toMatchObject({ path: 'catchup', outcome: 'queued' });
+    expect(late?.delayMs).toBeGreaterThanOrEqual(5 * 60_000 - 1_000);
+    expect(diag.of('heartbeat.beat').map((r) => r.outcome)).toEqual(['left', 'working']);
+    expect(diag.snapshot().sections.catchup).toMatchObject({
+      lastTrigger: 'connected',
+      lastFound: 1,
+    });
+  });
+
+  test('DIAG=off: the agent gets diagnostics that do nothing', () => {
+    const quiet = createContainer(config({ DIAG: 'off' }), { log: silentLogger });
+    expect(quiet.diag()).toBe(noopDiagnostics);
+    expect(quiet.inbox().size).toBe(0); // built and working without them
   });
 });

@@ -13,6 +13,7 @@
  *
  * Plain code and one API call (src/slack/status.ts); no model, no desk.
  */
+import { noopDiagnostics, type Diagnostics } from '../diag/types';
 import { describeError, type Logger } from '../lib/log';
 import type { SlackStatus, StatusLook } from '../slack/types';
 import type { PollContext, PollTask } from './poller';
@@ -28,6 +29,8 @@ export interface HeartbeatDeps {
   readonly template: string;
   readonly timeZone: string;
   readonly log: Logger;
+  /** What each beat showed (docs/diagnostics.md). Observes only. */
+  readonly diag?: Diagnostics;
 }
 
 export class Heartbeat implements PollTask {
@@ -44,20 +47,25 @@ export class Heartbeat implements PollTask {
   /** Checks the agent and shows the result. Never rejects. */
   async beat(at: Date = new Date()): Promise<void> {
     const { deskProblem, otherProblem, template, timeZone, log } = this.deps;
+    const diag = this.deps.diag ?? noopDiagnostics;
     try {
       const desk = await deskProblem();
       if (desk) {
         if (this.shown !== 'blocked') await this.show('blocked', STATUS_LOOKS.blocked);
+        diag.record('heartbeat.beat', { outcome: 'blocked', problem: desk });
         return;
       }
       const problem = otherProblem();
       if (problem) {
         log.warn('heartbeat: not fine; the status time is left where it was', { problem });
+        diag.record('heartbeat.beat', { outcome: 'left', problem });
         return;
       }
       await this.show('working', heartbeatLook(template, at, timeZone));
+      diag.record('heartbeat.beat', { outcome: 'working' });
     } catch (error) {
       log.warn('heartbeat failed', { error: describeError(error) });
+      diag.record('heartbeat.beat', { outcome: 'failed', problem: describeError(error) });
     }
   }
 

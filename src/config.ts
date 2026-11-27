@@ -116,6 +116,17 @@ const configValidator = toValidator(
 
     /** State (conversation memory, queue), logs and screenshots. */
     dataDir: s._default(s.string().check(s.minLength(1)), 'data'),
+
+    /**
+     * Diagnostics (docs/diagnostics.md): machine-readable records and a status
+     * snapshot under <DATA_DIR>/diag, for an observer outside the process.
+     * They only write down what happens; `off` changes nothing else.
+     */
+    diag: s._default(s.enum(['on', 'off']), 'on'),
+    /** Seconds between status snapshots (`status.json`). */
+    diagSnapshotSec: s._default(s.int().check(s.gte(1), s.lte(60)), 5),
+    /** Days of `diag-*.jsonl` kept. */
+    diagRetentionDays: s._default(s.int().check(s.gte(1), s.lte(90)), 7),
   }),
 );
 
@@ -165,6 +176,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     toolsPort: numberOrUndefined(env.TOOLS_PORT),
     timeZone: emptyToUndefined(env.TIME_ZONE),
     dataDir: emptyToUndefined(env.DATA_DIR),
+    diag: emptyToUndefined(env.DIAG),
+    diagSnapshotSec: numberOrUndefined(env.DIAG_SNAPSHOT_SEC),
+    diagRetentionDays: numberOrUndefined(env.DIAG_RETENTION_DAYS),
   });
 
   if (config.humanSlackUserIds.includes(config.agentSlackUserId)) {

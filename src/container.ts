@@ -15,6 +15,8 @@ import { AgentRuntime } from './agent/runtime';
 import { Triage } from './agent/triage';
 import { UsageLedger } from './agent/usage';
 import type { Config } from './config';
+import { createFileDiagnostics } from './diag/file';
+import { noopDiagnostics, type DiagnosticsDriver } from './diag/types';
 import { createMacDesk } from './desk/macos';
 import type { Desk } from './desk/types';
 import { createClaudeCliEngine, createClaudeCliJudge } from './engine/claude-cli';
@@ -65,6 +67,8 @@ export interface Container {
   catchup(): Catchup | null;
   /** The status heartbeat (call only while SLACK_STATUS works — see index.ts). */
   heartbeat(): Heartbeat;
+  /** Diagnostics records and status snapshot (DIAG, docs/diagnostics.md). Observes only. */
+  diag(): DiagnosticsDriver;
 }
 
 export interface ContainerOverrides {
@@ -77,6 +81,7 @@ export interface ContainerOverrides {
   state?: StateStore;
   engine?: Engine;
   judge?: Judge;
+  diag?: DiagnosticsDriver;
 }
 
 /** This many failed turns in a row and the heartbeat stops calling the agent fine. */
@@ -99,11 +104,24 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
   const log = overrides.log ?? createLogger(config.agentName);
   const dataDir = resolve(config.dataDir);
 
-  const inbox = lazy(() => new Inbox());
+  const diag = lazy(
+    (): DiagnosticsDriver =>
+      overrides.diag ??
+      (config.diag === 'on'
+        ? createFileDiagnostics({
+            dir: join(dataDir, 'diag'),
+            snapshotEveryMs: config.diagSnapshotSec * 1000,
+            retentionDays: config.diagRetentionDays,
+            log,
+          })
+        : noopDiagnostics),
+  );
+
+  const inbox = lazy(() => new Inbox(diag()));
   const listener = lazy(
     () =>
       overrides.listener ??
-      createSocketListener({ openUrl: openSocketUrl(config.slackAppToken), log }),
+      createSocketListener({ openUrl: openSocketUrl(config.slackAppToken), log, diag: diag() }),
   );
   const directory = lazy(
     () =>
@@ -131,6 +149,7 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
       state: state(),
       ...(overheard && { triage: overheard }),
       log,
+      diag: diag(),
     });
   });
 
@@ -204,6 +223,7 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
           waitMs: config.triageWaitSeconds * 1000,
           log,
           usage: usage(),
+          diag: diag(),
         })
       : null,
   );
@@ -226,6 +246,7 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
           intake: intake(),
           maxAgeMs: config.catchupMaxHours * 60 * 60 * 1000,
           log,
+          diag: diag(),
         })
       : null,
   );
@@ -243,6 +264,7 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
         template: config.heartbeatText,
         timeZone: config.timeZone,
         log,
+        diag: diag(),
       }),
   );
 
@@ -255,6 +277,7 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
         timeZone: config.timeZone,
         log,
         usage: usage(),
+        diag: diag(),
       }),
   );
 
@@ -278,5 +301,6 @@ export function createContainer(config: Config, overrides: ContainerOverrides = 
     usage,
     catchup,
     heartbeat,
+    diag,
   };
 }
